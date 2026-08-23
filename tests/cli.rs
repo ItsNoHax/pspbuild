@@ -95,12 +95,12 @@ fn inspect_reports_the_documented_fields() {
         .args(["inspect", output.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(contains("Format:"))
-        .stdout(contains("Encrypted:           yes"))
+        .stdout(contains("Format:              PSP PRX (encrypted)"))
+        .stdout(contains("Total size:"))
+        .stdout(contains("Encrypted:         yes"))
         .stdout(contains("Payload size:"))
-        .stdout(contains("KIRK payload size:"))
-        .stdout(contains("Total file size:"))
-        .stdout(contains("Module name:         cli_module"))
+        .stdout(contains("KIRK payload:"))
+        .stdout(contains("Module name:       cli_module"))
         .stdout(contains("Segments:"))
         .stdout(contains("Entry point:"));
 }
@@ -114,7 +114,8 @@ fn inspect_also_handles_a_plain_module() {
         .args(["inspect", input.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(contains("Encrypted:           no"));
+        .stdout(contains("Format:              ELF/PRX (plain)"))
+        .stdout(contains("Encrypted:         no"));
 }
 
 #[test]
@@ -291,4 +292,155 @@ fn the_reference_fixture_verifies_through_the_cli() {
         .assert()
         .success()
         .stdout(contains("VERIFIED"));
+}
+
+#[test]
+fn build_mg_produces_an_inspectable_eboot() {
+    let dir = TempDir::new().unwrap();
+    let input = fixture(&dir, "game.prx", 30_000);
+    let output = dir.path().join("EBOOT.PBP");
+
+    cli()
+        .args([
+            "build-mg",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--title",
+            "Test Title",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+
+    cli()
+        .args(["inspect", output.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("Format:              PBP container"))
+        .stdout(contains("Category:            MG"))
+        .stdout(contains("Title:               Test Title"))
+        .stdout(contains("DATA.PSP"))
+        .stdout(contains("PSP PRX (encrypted)"));
+
+    // The whole container verifies, and the module comes back out intact.
+    cli()
+        .args(["verify", output.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("VALID: PBP container structure"))
+        .stdout(contains("VERIFIED"));
+
+    let recovered = dir.path().join("back.prx");
+    cli()
+        .args([
+            "decrypt",
+            output.to_str().unwrap(),
+            "-o",
+            recovered.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(&recovered).unwrap(),
+        std::fs::read(&input).unwrap()
+    );
+}
+
+#[test]
+fn build_mg_defaults_its_output_to_eboot_pbp() {
+    let dir = TempDir::new().unwrap();
+    let input = fixture(&dir, "game.prx", 2048);
+
+    cli()
+        .args(["build-mg", input.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert!(dir.path().join("EBOOT.PBP").exists());
+}
+
+#[test]
+fn extract_writes_every_populated_section() {
+    let dir = TempDir::new().unwrap();
+    let input = fixture(&dir, "game.prx", 4096);
+    let eboot = dir.path().join("EBOOT.PBP");
+    let icon = dir.path().join("ICON0.PNG");
+    std::fs::write(&icon, b"\x89PNG\r\n\x1a\npretend pixels").unwrap();
+
+    cli()
+        .args([
+            "build-mg",
+            input.to_str().unwrap(),
+            "-o",
+            eboot.to_str().unwrap(),
+            "--icon0",
+            icon.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let out = dir.path().join("extracted");
+    cli()
+        .args([
+            "extract",
+            eboot.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--decrypt",
+        ])
+        .assert()
+        .success();
+
+    assert!(out.join("PARAM.SFO").exists());
+    assert!(out.join("DATA.PSP").exists());
+    assert_eq!(
+        std::fs::read(out.join("ICON0.PNG")).unwrap(),
+        std::fs::read(&icon).unwrap()
+    );
+    // Empty sections are skipped rather than written as zero-byte files.
+    assert!(!out.join("DATA.PSAR").exists());
+    assert!(!out.join("SND0.AT3").exists());
+    // The decrypted executable is the module we started from.
+    assert_eq!(
+        std::fs::read(out.join("DATA.PSP.dec")).unwrap(),
+        std::fs::read(&input).unwrap()
+    );
+}
+
+#[test]
+fn build_eg_says_it_is_unimplemented_rather_than_guessing() {
+    let dir = TempDir::new().unwrap();
+    let iso = dir.path().join("game.iso");
+    std::fs::write(&iso, vec![0u8; 4096]).unwrap();
+
+    cli()
+        .args(["build-eg", iso.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains("EG pipeline is not implemented yet"));
+}
+
+#[test]
+fn build_mg_refuses_an_eboot_where_a_module_belongs() {
+    let dir = TempDir::new().unwrap();
+    let input = fixture(&dir, "game.prx", 2048);
+    let eboot = dir.path().join("EBOOT.PBP");
+
+    cli()
+        .args([
+            "build-mg",
+            input.to_str().unwrap(),
+            "-o",
+            eboot.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Feeding the EBOOT back in must name the command that does handle it.
+    cli()
+        .args(["build-mg", eboot.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains("encrypt-prx"));
 }

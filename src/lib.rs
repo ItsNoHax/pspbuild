@@ -23,6 +23,7 @@ pub mod compression;
 pub mod crypto;
 pub mod error;
 pub mod format;
+pub mod inspect;
 pub mod kirk;
 pub mod mg;
 pub mod pbp;
