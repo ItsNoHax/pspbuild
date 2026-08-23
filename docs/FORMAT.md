@@ -232,12 +232,28 @@ module* also runs. Two different values, both accepted. The evidence cannot
 separate "the loader ignores it" from "the loader accepts either", and there is
 no reason to guess between those.
 
-**`bss_size` is likewise not validated.** Sony writes `0xFFFA3130` — read as
-signed, −380,624, exactly the negation of the `PT_PRXRELOC` segment's
-`p_filesz`. That is not a bss size by any reading, which suggests the field's
-conventional name is wrong or that Sony's tooling stores an unrelated delta
-there. This crate writes the summed `p_memsz - p_filesz` over `PT_LOAD`
-(146,588). Both boot.
+Sony writing `p_memsz` for later segments is confirmed on both available
+fixtures. Note also that in both, **segment 0 has `p_filesz == p_memsz`** —
+Sony's linker puts the bss in a later segment, so Sony's own tooling never
+faces the segment-0 ambiguity that broke a build here. `tests/genuine.rs`
+asserts that property, so a future fixture that breaks it will announce
+itself: such a file would make `seg_size[0]` directly observable and is worth
+examining closely.
+
+**`bss_size` is likewise not validated, and is misnamed.** Sony's value is
+exactly the *negation of the `PT_PRXRELOC` segment's `p_filesz`* — confirmed to
+the byte on two unrelated titles:
+
+| module | `PT_PRXRELOC` `p_filesz` | Sony's `bss_size` | as signed |
+| --- | ---: | ---: | ---: |
+| `APE ACADEMY 2` | 380,624 | `0xFFFA3130` | −380,624 |
+| `MotoGP` | 501,544 | `0xFFF858D8` | −501,544 |
+
+Two exact matches on unrelated builds is a rule, not a coincidence. Whatever
+that field is, it is not a bss size, so the conventional name this crate
+inherited for it is wrong. This crate writes the actual summed
+`p_memsz - p_filesz` over `PT_LOAD` instead. Both boot, so the loader does not
+read it.
 
 So `pspbuild` keeps `p_filesz` for every segment. It is uniform, it is what the
 one enforced field requires, and it is now confirmed on hardware for a

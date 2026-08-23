@@ -63,20 +63,25 @@ check, not a passing grade.
 
 ### 3.1 Against Sony
 
-The `APE ACADEMY 2` demo is a retail Sony build encrypted under `0xADF305F0` —
-the same tag this tool emits — which makes it the best fixture available.
-`pspbuild` verifies it completely: header SHA-1, both CMAC tags, and a full
-decrypt to a valid PSP module. Sony computed those tags and this crate
-re-derived them, so passing means the KIRK container and field layout agree
-with the real format rather than merely with themselves.
+Retail Sony builds encrypted under `0xADF305F0` — the same tag this tool emits
+— are the best fixtures available. `pspbuild` verifies them completely: header
+SHA-1, both CMAC tags, and a full decrypt to a valid PSP module. Sony computed
+those tags and this crate re-derived them, so passing means the KIRK container
+and field layout agree with the real format rather than merely with themselves.
 
-Re-encrypting that module reproduces Sony's `psp_size` exactly and matches 21
-of 23 header fields. The two that differ are documented as open questions in
-[FORMAT.md §8a](FORMAT.md) and pinned by `tests/genuine.rs`.
+Re-encrypting each module reproduces Sony's `psp_size` exactly and matches
+every header field the loader derives from the ELF. The two that differ are
+explained in [FORMAT.md §8a](FORMAT.md).
+
+`tests/genuine.rs` discovers whatever EBOOTs are present in `plans/` and
+asserts *rules* derived from each module's own ELF rather than constants from
+one file, so adding a fixture strengthens the checks without any edits. Two are
+currently available (`APE ACADEMY 2`, `MotoGP`), and both confirm the same two
+divergences.
 
 A useful negative result: a downloadable **demo** is still `CATEGORY=MG` with
 an empty `DATA.PSAR`. It is not an NPDRM container and carries no `NPUMDIMG`,
-so it is no help to the EG work. See [EG.md](EG.md).
+so it is no help to the EG work. See [EG.md §1.1](EG.md).
 
 A fixture produced by the reference tool is checked into `tests/fixtures/` and
 covered by `tests/compatibility.rs`, so foreign-file handling is a real test

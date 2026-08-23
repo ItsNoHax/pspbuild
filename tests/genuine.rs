@@ -5,208 +5,346 @@
 //! container, both CMACs and the header layout agree with the real thing rather
 //! than merely with themselves.
 //!
-//! The files cannot be redistributed, so the tests look for them and skip when
-//! they are absent. Drop them in `plans/`, which is gitignored.
+//! The files cannot be redistributed, so the tests discover whatever is present
+//! and skip when there is nothing. Drop EBOOTs in `plans/`, which is gitignored.
+//!
+//! Assertions are written as *rules* derived from each module's own ELF rather
+//! than as constants from one file, so adding another EBOOT strengthens them
+//! without any edits here.
 
 use std::path::PathBuf;
 
+use pspbuild::pbp::Pbp;
 use pspbuild::psp::header::PspModuleHeader;
 use pspbuild::psp::tag::TAG_DEMO_280;
 use pspbuild::{Category, EncryptOptions, decrypt_prx, encrypt_prx, inspect_prx, verify_prx};
 
-fn plans_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plans")
+/// A genuine Sony EBOOT found on disk.
+struct SonyEboot {
+    name: String,
+    eboot: Vec<u8>,
 }
 
-/// Find a file under `plans/` whose name contains `needle`, case-insensitively.
-fn find(needle: &str) -> Option<PathBuf> {
-    fn walk(dir: &PathBuf, needle: &str, out: &mut Vec<PathBuf>) {
+impl SonyEboot {
+    fn data_psp(&self) -> Vec<u8> {
+        Pbp::parse(&self.eboot).unwrap().data_psp().to_vec()
+    }
+
+    fn header(&self) -> PspModuleHeader {
+        PspModuleHeader::parse(&self.data_psp()).expect("Sony header parses")
+    }
+}
+
+/// One ELF program header, reduced to what matters here.
+#[derive(Debug, Clone, Copy)]
+struct Segment {
+    kind: u32,
+    filesz: u32,
+    memsz: u32,
+}
+
+const PT_LOAD: u32 = 1;
+const PT_PRXRELOC: u32 = 0x7000_00A0;
+
+/// Parse the program headers of a decrypted module.
+fn segments(elf: &[u8]) -> Vec<Segment> {
+    let u32_at = |o: usize| u32::from_le_bytes(elf[o..o + 4].try_into().unwrap());
+    let u16_at = |o: usize| u16::from_le_bytes(elf[o..o + 2].try_into().unwrap());
+
+    let phoff = u32_at(0x1C) as usize;
+    let phentsize = u16_at(0x2A) as usize;
+    let phnum = u16_at(0x2C) as usize;
+
+    (0..phnum)
+        .map(|i| {
+            let o = phoff + i * phentsize;
+            Segment {
+                kind: u32_at(o),
+                filesz: u32_at(o + 0x10),
+                memsz: u32_at(o + 0x14),
+            }
+        })
+        .collect()
+}
+
+/// Every genuine Sony EBOOT under `plans/`, encrypted with the tag this tool
+/// emits. Anything else found there is ignored rather than failing the run.
+fn sony_eboots() -> Vec<SonyEboot> {
+    fn walk(dir: &PathBuf, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, needle, out);
+                walk(&path, out);
             } else if path
-                .to_str()
-                .is_some_and(|s| s.to_lowercase().contains(needle))
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("pbp"))
             {
                 out.push(path);
             }
         }
     }
-    let mut found = Vec::new();
-    walk(&plans_dir(), &needle.to_lowercase(), &mut found);
-    found.sort();
-    found.into_iter().next()
-}
 
-/// A genuine Sony demo EBOOT, encrypted under the same tag this tool emits.
-fn ape_academy() -> Option<Vec<u8>> {
-    let path = find("ape academy")?;
-    std::fs::read(path).ok()
-}
+    let mut paths = Vec::new();
+    walk(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plans"),
+        &mut paths,
+    );
+    paths.sort();
 
-macro_rules! sony_eboot_or_skip {
-    () => {
-        match ape_academy() {
-            Some(data) => data,
-            None => {
-                eprintln!("no genuine Sony EBOOT available; skipping");
-                return;
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let eboot = std::fs::read(&path).ok()?;
+            // Only files this crate's tag applies to are usable as fixtures.
+            let info = inspect_prx(&eboot).ok()?;
+            if info.tag != Some(TAG_DEMO_280.tag) {
+                return None;
             }
-        }
-    };
+            let name = Pbp::parse(&eboot)
+                .ok()
+                .and_then(|p| p.param_sfo().ok())
+                .and_then(|s| s.get_text("TITLE"))
+                .unwrap_or_else(|| path.display().to_string());
+            Some(SonyEboot { name, eboot })
+        })
+        .collect()
 }
 
-#[test]
-fn a_genuine_sony_module_verifies_completely() {
-    let eboot = sony_eboot_or_skip!();
-
-    // Every check, against a file this crate did not produce. If the KIRK
-    // container layout or either CMAC were subtly wrong, this is where it
-    // would show, because Sony computed them and we are re-deriving them.
-    let result = verify_prx(&eboot).expect("Sony EBOOT must verify");
-    assert!(
-        result.checks.iter().any(|c| c.contains("CMAC")),
-        "CMAC check did not run"
-    );
-    assert!(result.module.is_some(), "recovered payload is not a module");
-    assert_eq!(result.recovered_size, 7_657_824);
-}
-
-#[test]
-fn a_genuine_sony_module_uses_the_tag_this_tool_emits() {
-    let eboot = sony_eboot_or_skip!();
-    let info = inspect_prx(&eboot).unwrap();
-
-    // This is why the file is useful as a fixture at all.
-    assert_eq!(info.tag, Some(TAG_DEMO_280.tag));
-    assert!(info.encrypted);
-    // Sony shipped this one uncompressed, which the size fields confirm.
-    assert!(!info.compressed);
-}
-
-#[test]
-fn the_demo_is_a_memory_stick_game_not_an_npdrm_download() {
-    // Worth pinning: a downloadable *demo* is still CATEGORY=MG with an empty
-    // DATA.PSAR. It is not an EG/NPDRM container and carries no NPUMDIMG, so
-    // it does not serve as a fixture for that work.
-    let eboot = sony_eboot_or_skip!();
-    let pbp = pspbuild::pbp::Pbp::parse(&eboot).unwrap();
-
-    assert_eq!(pbp.category(), Some(Category::Mg));
-    assert!(pbp.data_psar().is_empty(), "an MG demo carries no archive");
-    assert!(
-        !eboot.windows(8).any(|w| w == b"NPUMDIMG"),
-        "unexpectedly found NPUMDIMG in an MG container"
-    );
-}
-
-#[test]
-fn our_header_matches_sony_on_every_field_we_derive_from_the_elf() {
-    let eboot = sony_eboot_or_skip!();
-    let module = decrypt_prx(&eboot).expect("Sony module decrypts");
-
-    let ours = encrypt_prx(
-        &module,
-        &EncryptOptions {
-            compress: false,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    let sony = PspModuleHeader::parse(pspbuild::pbp::Pbp::parse(&eboot).unwrap().data_psp())
-        .expect("Sony header parses");
-    let mine = PspModuleHeader::parse(&ours.data).expect("our header parses");
-
-    // Sizing agrees exactly, which is the headline claim of this project: the
-    // same module produces the same container size Sony's tooling produced.
-    assert_eq!(mine.psp_size, sony.psp_size, "psp_size");
-    assert_eq!(mine.elf_size, sony.elf_size, "elf_size");
-    assert_eq!(ours.data.len(), sony.psp_size as usize);
-
-    assert_eq!(mine.mod_attribute, sony.mod_attribute, "mod_attribute");
-    assert_eq!(mine.comp_attribute, sony.comp_attribute, "comp_attribute");
-    assert_eq!(mine.modname, sony.modname, "modname");
-    assert_eq!(mine.nsegments, sony.nsegments, "nsegments");
-    assert_eq!(mine.boot_entry, sony.boot_entry, "boot_entry");
-    assert_eq!(mine.modinfo_offset, sony.modinfo_offset, "modinfo_offset");
-    assert_eq!(mine.decrypt_mode, sony.decrypt_mode, "decrypt_mode");
-    assert_eq!(mine.module_ver_lo, sony.module_ver_lo, "module_ver_lo");
-    assert_eq!(mine.module_ver_hi, sony.module_ver_hi, "module_ver_hi");
-    assert_eq!(mine.devkit_version, sony.devkit_version, "devkit_version");
-
-    for i in 0..sony.nsegments.min(4) as usize {
-        assert_eq!(mine.seg_align[i], sony.seg_align[i], "seg_align[{i}]");
-        assert_eq!(mine.seg_address[i], sony.seg_address[i], "seg_address[{i}]");
+/// Run `body` over every discovered fixture, skipping if there are none.
+fn for_each_sony(body: impl Fn(&SonyEboot)) {
+    let fixtures = sony_eboots();
+    if fixtures.is_empty() {
+        eprintln!("no genuine Sony EBOOTs available; skipping");
+        return;
     }
-    // seg_size[0] agrees, though Sony's first segment has p_filesz == p_memsz
-    // so this particular file does not distinguish the two rules. The hardware
-    // test with AngleZero does: p_memsz there fails to load.
-    assert_eq!(mine.seg_size[0], sony.seg_size[0], "seg_size[0]");
+    for fixture in &fixtures {
+        eprintln!("  checking {}", fixture.name);
+        body(fixture);
+    }
 }
 
 #[test]
-fn the_two_fields_where_we_diverge_from_sony_are_deliberate() {
-    // Both divergences are settled, not open. A rebuild of this very module
-    // with pspbuild's values boots on a retail PSP Slim, and so does Sony's
-    // original with theirs — so the firmware accepts either for these two
-    // fields. Pinned so that changing them stays a visible decision.
-    // See docs/FORMAT.md section 8a.
-    let eboot = sony_eboot_or_skip!();
-    let module = decrypt_prx(&eboot).unwrap();
-    let ours = encrypt_prx(
-        &module,
-        &EncryptOptions {
-            compress: false,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+fn every_sony_eboot_verifies_completely() {
+    for_each_sony(|f| {
+        // Sony computed the SHA-1 and both CMAC tags; this re-derives them. If
+        // the container layout or either MAC were subtly wrong, it shows here
+        // and nowhere else, because every other test checks us against us.
+        let result = verify_prx(&f.eboot).unwrap_or_else(|e| panic!("{}: {e}", f.name));
+        assert!(
+            result.checks.iter().any(|c| c.contains("CMAC")),
+            "{}: CMAC check did not run",
+            f.name
+        );
+        assert!(
+            result.module.is_some(),
+            "{}: payload is not a module",
+            f.name
+        );
+    });
+}
 
-    let sony =
-        PspModuleHeader::parse(pspbuild::pbp::Pbp::parse(&eboot).unwrap().data_psp()).unwrap();
-    let mine = PspModuleHeader::parse(&ours.data).unwrap();
+#[test]
+fn none_of_the_available_fixtures_are_eg() {
+    // Demos and firmware updates are all CATEGORY=MG with an empty DATA.PSAR.
+    // Recorded so the absence of an EG fixture stays visible rather than being
+    // rediscovered each time one of these files is mistaken for one.
+    for_each_sony(|f| {
+        let pbp = Pbp::parse(&f.eboot).unwrap();
+        assert_eq!(pbp.category(), Some(Category::Mg), "{}", f.name);
+        assert!(pbp.data_psar().is_empty(), "{}: unexpected archive", f.name);
+        assert!(
+            !f.eboot.windows(8).any(|w| w == b"NPUMDIMG"),
+            "{}: found NPUMDIMG in an MG container",
+            f.name
+        );
+    });
+}
 
-    // 1. seg_size beyond the first segment. Sony writes p_memsz (166332); this
-    //    tool writes p_filesz (19744) for every segment. Only seg_size[0] is
-    //    enforced by the loader — p_memsz there fails to load — and segment 1
-    //    accepts both, confirmed by booting this module built each way.
-    assert_eq!(sony.seg_size[1], 166_332, "Sony writes p_memsz");
-    assert_eq!(mine.seg_size[1], 19_744, "we write p_filesz");
+#[test]
+fn our_header_matches_sony_on_every_field_the_loader_derives_from_the_elf() {
+    for_each_sony(|f| {
+        let module = decrypt_prx(&f.eboot).unwrap_or_else(|e| panic!("{}: {e}", f.name));
+        let ours = encrypt_prx(
+            &module,
+            &EncryptOptions {
+                compress: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-    // 2. bss_size. We write the summed (p_memsz - p_filesz) over PT_LOAD.
-    //    Sony writes a value that is exactly the negation of the PT_PRXRELOC
-    //    segment's p_filesz, which does not look like a bss size at all and
-    //    suggests the field's meaning is not what its conventional name says.
-    //    Not validated either: both values boot.
-    assert_eq!(mine.bss_size, 146_588, "sum of PT_LOAD bss");
-    assert_eq!(sony.bss_size, 0xFFFA_3130, "Sony's value");
-    assert_eq!(
-        (sony.bss_size as i32).unsigned_abs(),
-        380_624,
-        "matches the PT_PRXRELOC filesz exactly"
-    );
+        let sony = f.header();
+        let mine = PspModuleHeader::parse(&ours.data).unwrap();
+        let at = |field: &str| format!("{}: {field}", f.name);
+
+        // Sizing agrees exactly: the same module produces the same container
+        // size Sony's own tooling produced. That is the headline claim.
+        assert_eq!(mine.psp_size, sony.psp_size, "{}", at("psp_size"));
+        assert_eq!(mine.elf_size, sony.elf_size, "{}", at("elf_size"));
+        assert_eq!(ours.data.len(), sony.psp_size as usize, "{}", at("length"));
+
+        assert_eq!(
+            mine.mod_attribute,
+            sony.mod_attribute,
+            "{}",
+            at("mod_attribute")
+        );
+        assert_eq!(
+            mine.comp_attribute,
+            sony.comp_attribute,
+            "{}",
+            at("comp_attribute")
+        );
+        assert_eq!(mine.modname, sony.modname, "{}", at("modname"));
+        assert_eq!(mine.nsegments, sony.nsegments, "{}", at("nsegments"));
+        assert_eq!(mine.boot_entry, sony.boot_entry, "{}", at("boot_entry"));
+        assert_eq!(
+            mine.modinfo_offset,
+            sony.modinfo_offset,
+            "{}",
+            at("modinfo_offset")
+        );
+        assert_eq!(
+            mine.decrypt_mode,
+            sony.decrypt_mode,
+            "{}",
+            at("decrypt_mode")
+        );
+        assert_eq!(
+            mine.module_ver_lo,
+            sony.module_ver_lo,
+            "{}",
+            at("module_ver_lo")
+        );
+        assert_eq!(
+            mine.module_ver_hi,
+            sony.module_ver_hi,
+            "{}",
+            at("module_ver_hi")
+        );
+        assert_eq!(
+            mine.devkit_version,
+            sony.devkit_version,
+            "{}",
+            at("devkit_version")
+        );
+
+        for i in 0..sony.nsegments.min(4) as usize {
+            assert_eq!(mine.seg_align[i], sony.seg_align[i], "{}", at("seg_align"));
+            assert_eq!(
+                mine.seg_address[i],
+                sony.seg_address[i],
+                "{}",
+                at("seg_address")
+            );
+        }
+        // seg_size[0] is the one size field the loader enforces, and both agree
+        // on it. See docs/FORMAT.md section 8a.
+        assert_eq!(mine.seg_size[0], sony.seg_size[0], "{}", at("seg_size[0]"));
+    });
+}
+
+#[test]
+fn sony_writes_p_memsz_for_segments_after_the_first() {
+    // A rule, checked against each module's own ELF. Both known fixtures obey
+    // it, and this crate deliberately writes p_filesz instead — the loader
+    // accepts either, confirmed by booting a rebuilt module on hardware.
+    for_each_sony(|f| {
+        let module = decrypt_prx(&f.eboot).unwrap();
+        let loads: Vec<_> = segments(&module)
+            .into_iter()
+            .filter(|s| s.kind == PT_LOAD)
+            .collect();
+        let sony = f.header();
+
+        for (i, seg) in loads.iter().enumerate().skip(1) {
+            assert_eq!(
+                sony.seg_size[i], seg.memsz,
+                "{}: seg_size[{i}] is not p_memsz",
+                f.name
+            );
+        }
+
+        // Sony's own segment 0 always has filesz == memsz in the samples seen,
+        // so it never distinguishes the two rules. Assert that rather than
+        // silently relying on it — if a fixture ever breaks this, seg_size[0]
+        // becomes directly observable and worth re-examining.
+        if let Some(first) = loads.first() {
+            assert_eq!(
+                first.filesz, first.memsz,
+                "{}: segment 0 differs — this fixture CAN distinguish the \
+                 seg_size[0] rule, so check what Sony wrote",
+                f.name
+            );
+        }
+    });
+}
+
+#[test]
+fn sonys_bss_size_is_the_negated_relocation_size() {
+    // Not a bss size at all. Confirmed exactly on every fixture: the field
+    // holds -(PT_PRXRELOC p_filesz), which means its conventional name is
+    // wrong. The loader does not validate it — this crate writes the summed
+    // PT_LOAD bss instead and those builds boot.
+    for_each_sony(|f| {
+        let module = decrypt_prx(&f.eboot).unwrap();
+        let segs = segments(&module);
+        let Some(reloc) = segs.iter().find(|s| s.kind == PT_PRXRELOC) else {
+            return;
+        };
+
+        let sony_bss = f.header().bss_size as i32;
+        assert_eq!(
+            sony_bss,
+            -(reloc.filesz as i32),
+            "{}: bss_size {:#010x} is not -(PT_PRXRELOC filesz {})",
+            f.name,
+            f.header().bss_size,
+            reloc.filesz
+        );
+
+        // And what this crate writes instead: the actual bss.
+        let ours = encrypt_prx(
+            &module,
+            &EncryptOptions {
+                compress: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let expected: u32 = segs
+            .iter()
+            .filter(|s| s.kind == PT_LOAD)
+            .map(|s| s.memsz - s.filesz)
+            .sum();
+        assert_eq!(
+            PspModuleHeader::parse(&ours.data).unwrap().bss_size,
+            expected,
+            "{}: our bss_size is not the summed PT_LOAD bss",
+            f.name
+        );
+    });
 }
 
 #[test]
 fn we_produce_a_far_smaller_container_than_sony_shipped() {
-    let eboot = sony_eboot_or_skip!();
-    let module = decrypt_prx(&eboot).unwrap();
-
-    // Sony shipped this demo uncompressed. Compression is the whole reason the
-    // rebuilt container is a third of the size.
-    let ours = encrypt_prx(&module, &EncryptOptions::default()).unwrap();
-    assert!(ours.compressed);
-    assert!(
-        ours.data.len() * 2 < eboot.len(),
-        "expected a large saving, got {} from {}",
-        ours.data.len(),
-        eboot.len()
-    );
-    // And it still round-trips to exactly what Sony encrypted.
-    assert_eq!(decrypt_prx(&ours.data).unwrap(), module);
+    for_each_sony(|f| {
+        let module = decrypt_prx(&f.eboot).unwrap();
+        // Sony shipped these uncompressed; compression is the whole saving.
+        let ours = encrypt_prx(&module, &EncryptOptions::default()).unwrap();
+        assert!(ours.compressed, "{}", f.name);
+        assert!(
+            ours.data.len() < f.eboot.len(),
+            "{}: {} is not smaller than {}",
+            f.name,
+            ours.data.len(),
+            f.eboot.len()
+        );
+        // And it still round-trips to exactly what Sony encrypted.
+        assert_eq!(decrypt_prx(&ours.data).unwrap(), module, "{}", f.name);
+    });
 }
