@@ -200,50 +200,52 @@ Failures in this area are hard to read, because the firmware reports almost all
 of them as `80020148 UNSUPPORTED_PRX_TYPE` — nominally "the buffer wasn't an
 ELF after decryption", which points nowhere near a header field.
 
-## 8a. `seg_size` beyond the first segment — unresolved
+## 8a. Which size fields the firmware actually checks
 
-`seg_size[0]` must be the segment's `p_filesz`. Established on hardware: a
-build using `p_memsz` claimed 7.9 MB for a 498 KB module, failed to load, and
-crashed outright once compression was added on top.
+Only `seg_size[0]` is enforced. The rest of the size fields accept more than
+one answer, and this was settled by boot tests rather than by inference.
 
-That test used a **single-segment** module, so it says nothing about later
-segments — and a genuine Sony module disagrees with this crate about them.
+### The evidence
 
-Comparing the `APE ACADEMY 2` demo (Sony's own build, same tag `0xADF305F0`)
-against what `pspbuild` generates for the identical module:
+Three independent data points, two of them from this console:
 
-| field | Sony | `pspbuild` | note |
-| --- | ---: | ---: | --- |
-| `seg_size[0]` | 7,255,412 | 7,255,412 | segment 0 has `p_filesz == p_memsz` |
-| `seg_size[1]` | 166,332 | 19,744 | Sony writes `p_memsz`, we write `p_filesz` |
+| module | `seg_size[0]` | `seg_size[1]` | `bss_size` | result |
+| --- | --- | --- | --- | --- |
+| AngleZero, 1 segment | `p_memsz` | — | summed | **fails to load** |
+| AngleZero, 1 segment | `p_filesz` | — | summed | boots |
+| `APE ACADEMY 2`, Sony's build | `p_filesz`\* | `p_memsz` | `0xFFFA3130` | boots |
+| `APE ACADEMY 2`, rebuilt here | `p_filesz` | `p_filesz` | summed | **boots** |
 
-Every other ELF-derived field matches exactly, sizing included — 21 of 23.
+\* Sony's segment 0 has `p_filesz == p_memsz`, so that cell cannot distinguish
+the two rules; it is consistent with either.
 
-Sony's segment 0 has `p_filesz == p_memsz`, so it cannot distinguish the two
-rules. The only evidence about segment 0 is the hardware test, which says
-`p_filesz`; the only evidence about segment 1 is Sony's choice, which says
-`p_memsz`. **Both can be true** — the rule may differ by segment index, or
-`seg_size` may mean something subtler than its name suggests.
+### What follows
 
-This is not resolved, and the code has deliberately **not** been changed to
-match Sony. A plausible-looking claim about `seg_size` has already broken a
-working build once in this project's history; the way to settle it is a boot
-test of a multi-segment module, not an argument from symmetry.
+**`seg_size[0]` must be `p_filesz`.** Using `p_memsz` claimed 7.9 MB for a
+498 KB module, failed to load, and crashed outright once compression was added
+on top. This is the one size field the loader genuinely validates — presumably
+because it sizes the image copy.
 
-`tests/genuine.rs` pins both values so that changing either is a visible
-decision rather than silent drift.
+**`seg_size[1]` is not validated, or tolerates both.** Sony writes `p_memsz`
+and their build runs; this crate writes `p_filesz` and its rebuild of *the same
+module* also runs. Two different values, both accepted. The evidence cannot
+separate "the loader ignores it" from "the loader accepts either", and there is
+no reason to guess between those.
 
-### `bss_size`
-
-The same comparison shows a second divergence. This crate writes the summed
-`p_memsz - p_filesz` over `PT_LOAD` (146,588). Sony writes `0xFFFA3130`, which
-read as signed is −380,624 — exactly the negation of the `PT_PRXRELOC`
-segment's `p_filesz`.
-
-That is not a bss size by any reading, which suggests either that the field's
+**`bss_size` is likewise not validated.** Sony writes `0xFFFA3130` — read as
+signed, −380,624, exactly the negation of the `PT_PRXRELOC` segment's
+`p_filesz`. That is not a bss size by any reading, which suggests the field's
 conventional name is wrong or that Sony's tooling stores an unrelated delta
-there. Whatever it is, the firmware evidently does not validate it, since the
-demo ships with that value and runs.
+there. This crate writes the summed `p_memsz - p_filesz` over `PT_LOAD`
+(146,588). Both boot.
+
+So `pspbuild` keeps `p_filesz` for every segment. It is uniform, it is what the
+one enforced field requires, and it is now confirmed on hardware for a
+two-segment module. Matching Sony's `p_memsz` on segment 1 would buy nothing
+and would mean writing a size the firmware does not want anywhere it does care.
+
+`tests/genuine.rs` pins the divergence so that changing it stays a visible
+decision.
 
 ## 9. Validation
 

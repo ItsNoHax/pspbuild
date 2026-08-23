@@ -6,7 +6,7 @@ What has actually been tested, and what has not.
 
 | target | result |
 | --- | --- |
-| PSP Slim, official firmware | MG EBOOT boots, on `pspbuild/v1` |
+| PSP Slim, official firmware | MG EBOOT boots — single **and** multi-segment |
 | other PSP models | untested |
 | other firmware revisions | untested |
 
@@ -14,10 +14,17 @@ A compressed, dynamically sized MG EBOOT built by this tool boots on a retail
 PSP Slim running official firmware. That is one console. Nothing here should be
 read as a claim about the whole PSP line.
 
-Confirmed twice, on either side of the key-derivation domain bump described in
-§4.1. The second run used `build-mg` end to end — module encryption, `--base`
-section reuse and a regenerated `PARAM.SFO` — rather than only `encrypt-prx`,
-so the MG pipeline is validated as a whole rather than just its encryption step.
+Three boot tests, each answering something the others could not:
+
+| build | what it established |
+| --- | --- |
+| AngleZero, `prx-encrypter/v1` | the format and header fields are right at all |
+| AngleZero, `pspbuild/v1` | the re-keyed output is valid; `build-mg` works end to end |
+| `APE ACADEMY 2` rebuilt here | **multi-segment modules load** — see [FORMAT.md §8a](FORMAT.md) |
+
+The third is the one that closed a real open question. AngleZero has a single
+segment, so no amount of testing it could say anything about `seg_size[1]`.
+Rebuilding a genuine two-segment Sony module and booting it did.
 
 Two header fields were isolated on that hardware by varying one at a time
 against an otherwise byte-identical build:

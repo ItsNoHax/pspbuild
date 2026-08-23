@@ -143,16 +143,19 @@ fn our_header_matches_sony_on_every_field_we_derive_from_the_elf() {
         assert_eq!(mine.seg_align[i], sony.seg_align[i], "seg_align[{i}]");
         assert_eq!(mine.seg_address[i], sony.seg_address[i], "seg_address[{i}]");
     }
-    // seg_size[0] agrees because Sony's first segment has p_filesz == p_memsz;
-    // it does not distinguish the two rules. See the next test.
+    // seg_size[0] agrees, though Sony's first segment has p_filesz == p_memsz
+    // so this particular file does not distinguish the two rules. The hardware
+    // test with AngleZero does: p_memsz there fails to load.
     assert_eq!(mine.seg_size[0], sony.seg_size[0], "seg_size[0]");
 }
 
 #[test]
-fn the_two_fields_where_we_diverge_from_sony_are_known_and_unresolved() {
-    // Pinned deliberately. These are open questions, not settled behaviour, and
-    // this test exists so that changing either one is a visible decision rather
-    // than a silent drift. See docs/FORMAT.md and docs/COMPATIBILITY.md.
+fn the_two_fields_where_we_diverge_from_sony_are_deliberate() {
+    // Both divergences are settled, not open. A rebuild of this very module
+    // with pspbuild's values boots on a retail PSP Slim, and so does Sony's
+    // original with theirs — so the firmware accepts either for these two
+    // fields. Pinned so that changing them stays a visible decision.
+    // See docs/FORMAT.md section 8a.
     let eboot = sony_eboot_or_skip!();
     let module = decrypt_prx(&eboot).unwrap();
     let ours = encrypt_prx(
@@ -169,8 +172,9 @@ fn the_two_fields_where_we_diverge_from_sony_are_known_and_unresolved() {
     let mine = PspModuleHeader::parse(&ours.data).unwrap();
 
     // 1. seg_size beyond the first segment. Sony writes p_memsz (166332); this
-    //    tool writes p_filesz (19744). Hardware confirmed p_filesz is required
-    //    for a single-segment module, but that test could not reach segment 1.
+    //    tool writes p_filesz (19744) for every segment. Only seg_size[0] is
+    //    enforced by the loader — p_memsz there fails to load — and segment 1
+    //    accepts both, confirmed by booting this module built each way.
     assert_eq!(sony.seg_size[1], 166_332, "Sony writes p_memsz");
     assert_eq!(mine.seg_size[1], 19_744, "we write p_filesz");
 
@@ -178,6 +182,7 @@ fn the_two_fields_where_we_diverge_from_sony_are_known_and_unresolved() {
     //    Sony writes a value that is exactly the negation of the PT_PRXRELOC
     //    segment's p_filesz, which does not look like a bss size at all and
     //    suggests the field's meaning is not what its conventional name says.
+    //    Not validated either: both values boot.
     assert_eq!(mine.bss_size, 146_588, "sum of PT_LOAD bss");
     assert_eq!(sony.bss_size, 0xFFFA_3130, "Sony's value");
     assert_eq!(
