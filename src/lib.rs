@@ -19,7 +19,6 @@
 //!           -> size the container -> KIRK CMD0 -> ~PSP header -> file
 //! ```
 
-pub mod compression;
 pub mod crypto;
 pub mod error;
 pub mod format;
@@ -132,7 +131,7 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
     // Compression runs before any size is committed to, so the container is
     // always sized from the post-compression payload.
     let (payload, compressed) = if options.compress {
-        let compressed = compression::gzip_compress(input)?;
+        let compressed = prx::compression::gzip_compress(input)?;
         if compressed.len() < input.len() {
             (compressed, true)
         } else {
@@ -316,7 +315,7 @@ pub fn verify_prx(data: &[u8]) -> Result<Verification> {
 
     // 4. Decompress and re-parse.
     let recovered = if meta.is_compressed() {
-        let out = compression::gzip_decompress(&payload)?;
+        let out = prx::compression::gzip_decompress(&payload)?;
         checks.push("gzip payload decompresses".into());
         out
     } else {
@@ -366,7 +365,7 @@ pub fn decrypt_prx(data: &[u8]) -> Result<Vec<u8>> {
 
     let payload = cmd1_decrypt(&container, true)?;
     if meta.is_compressed() {
-        compression::gzip_decompress(&payload)
+        prx::compression::gzip_decompress(&payload)
     } else {
         Ok(payload)
     }

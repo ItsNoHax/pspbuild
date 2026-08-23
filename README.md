@@ -1,15 +1,16 @@
 # pspbuild
 
-Encrypt PSP PRX modules into PSP-compatible encrypted PRX files.
+A PSP EBOOT toolkit: encrypt PRX modules, build homebrew `EBOOT.PBP`
+containers, and inspect or verify what you or anyone else produced.
 
-A from-scratch Rust replacement for the PSPSDK `PrxEncrypter` tool. It
-implements the required KIRK cryptography locally, has no runtime dependencies,
-and — the reason it exists — **sizes its output from the actual payload instead
-of from a fixed-capacity template**.
+A from-scratch Rust replacement for the PSPSDK `PrxEncrypter` tool and the PBP
+handling around it. It implements the required KIRK cryptography locally, has no
+runtime dependencies, and — the reason it exists — **sizes its output from the
+actual payload instead of from a fixed-capacity template**.
 
 ```text
-700 KiB PRX  ->  pspbuild  ->  ~700 KiB encrypted PRX
-700 KiB PRX  ->  legacy tool    ->   5.3 MiB encrypted PRX
+700 KiB PRX  ->  pspbuild     ->  ~700 KiB encrypted PRX
+700 KiB PRX  ->  legacy tool  ->    5.3 MiB encrypted PRX
 ```
 
 Output is confirmed booting on a retail PSP Slim running official firmware.
@@ -55,47 +56,81 @@ environment is required.
 ## Usage
 
 ```sh
+# Build a homebrew EBOOT.PBP from a module
+pspbuild build-mg game.prx -o EBOOT.PBP --title "My Game" --icon0 ICON0.PNG
+
 # Encrypt a module, or an EBOOT.PBP (its DATA.PSP section is replaced)
-pspbuild encrypt game.prx -o game.enc.prx
-pspbuild encrypt EBOOT.PBP -o signed/EBOOT.PBP
+pspbuild encrypt-prx game.prx -o game.enc.prx
+pspbuild encrypt-prx EBOOT.PBP -o signed/EBOOT.PBP
 
-# Show what a file is, encrypted or not
-pspbuild inspect game.enc.prx
+# Show what a file is and what is inside it
+pspbuild inspect EBOOT.PBP
 
-# Check the header hash, both CMAC tags, and the decrypted payload
-pspbuild verify game.enc.prx
+# Check the container, the header hash, both CMAC tags and the payload
+pspbuild verify EBOOT.PBP
+
+# Unpack a container
+pspbuild extract EBOOT.PBP -o extracted/ --decrypt
 
 # Recover the original module
-pspbuild decrypt game.enc.prx -o game.dec.prx
+pspbuild decrypt EBOOT.PBP -o game.prx
 ```
 
-Options for `encrypt`:
-
-```text
--o, --output <FILE>         output path (default: <input>.enc.<ext>)
-    --no-compress           skip gzip compression of the payload
-    --format <FMT>          psp (default) or pspemu
--v, --verbose               report each stage on stderr
-```
+`encrypt` remains an alias for `encrypt-prx`, so existing build scripts keep
+working.
 
 Normal runs print nothing on stdout and exit non-zero on failure, so the tool
 drops straight into a build script. `--verbose` writes to stderr only.
 
 ```console
-$ pspbuild -v encrypt game.prx
+$ pspbuild -v build-mg game.prx --title "My Game"
+Category:         MG
+Title:            My Game
 Input size:       498752 bytes
 Compression:      enabled
-Payload size:     147126 bytes
-Encrypted size:   147136 bytes
-Output size:      147472 bytes
+DATA.PSP size:    147472 bytes
+  PARAM.SFO    360 bytes
+  DATA.PSP     147472 bytes
+Output size:      147872 bytes
+```
+
+### Inspection
+
+```console
+$ pspbuild inspect EBOOT.PBP
+Format:              PBP container
+Total size:          431844 bytes
+Container version:   0x00010000
+Category:            MG
+Title:               Angle Zero
+Firmware required:   1.00
+
+Sections:
+  PARAM.SFO    offset 0x00000028         288 bytes  PARAM.SFO
+  ICON0.PNG    offset 0x00000148       17186 bytes  PNG image
+  ICON1.PMF    empty
+  PIC0.PNG     empty
+  PIC1.PNG     offset 0x0000446A      101102 bytes  PNG image
+  SND0.AT3     offset 0x0001CF58      165756 bytes  RIFF/AT3 audio
+  DATA.PSP     offset 0x000456D4      147472 bytes  PSP PRX (encrypted)
+  DATA.PSAR    empty
+
+Executable:
+  Format:            PSP PRX (encrypted)
+  Encrypted:         yes
+  Compression:       yes
+  Payload size:      498752 bytes
+  Module name:       AngleZero
+  Entry point:       0x00010258
+  Tag:               0xADF305F0
 ```
 
 ## Build-system integration
 
 ```cmake
 add_custom_command(
-    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/game.enc.prx
-    COMMAND pspbuild encrypt $<TARGET_FILE:game> -o game.enc.prx
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/EBOOT.PBP
+    COMMAND pspbuild build-mg $<TARGET_FILE:game> -o EBOOT.PBP --title "My Game"
     DEPENDS game
 )
 ```
@@ -105,55 +140,42 @@ add_custom_command(
 The CLI is a thin wrapper; the same functionality is available directly.
 
 ```rust
-use pspbuild::{EncryptOptions, encrypt_prx, verify_prx};
+use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
 
 let module = std::fs::read("game.prx")?;
-let encrypted = encrypt_prx(&module, &EncryptOptions::default())?;
-std::fs::write("game.enc.prx", &encrypted.data)?;
-
-verify_prx(&encrypted.data)?;
+let eboot = build_mg_eboot(&MgEbootRequest {
+    module: &module,
+    title: Some("My Game"),
+    compress: true,
+    ..Default::default()
+})?;
+std::fs::write("EBOOT.PBP", &eboot.data)?;
 ```
 
-`inspect_prx`, `verify_prx` and `decrypt_prx` are also public, as are the
-format layers (`psp::header`, `psp::tag`, `kirk`, `crypto`) for tools that need
-them.
+`encrypt_prx`, `decrypt_prx`, `verify_prx` and `inspect::inspect` are public, as
+are the format layers (`pbp`, `sfo`, `psp::header`, `psp::tag`, `kirk`,
+`crypto`) for tools that need them.
 
-## PBP containers
+## MG and EG
 
-PSP homebrew ships as `EBOOT.PBP`, which carries the module in its `DATA.PSP`
-section. Pass a PBP to any command and it is handled directly: `encrypt`
-rewrites that one section and rebuilds the container, leaving `PARAM.SFO`,
-icons and audio byte-identical. A real 783,124-byte EBOOT becomes 431,844.
+`CATEGORY` in `PARAM.SFO` decides which security path the firmware runs, and the
+two are genuinely different pipelines rather than options on one.
 
-## Format overview
+- **MG** — memory-stick games, i.e. homebrew. `DATA.PSP` is an encrypted PRX and
+  there is no signature anywhere in the chain. **Implemented.**
+- **EG** — downloaded games. `DATA.PSP` is an NPDRM container and `DATA.PSAR`
+  holds an `NPUMDIMG` encrypted ISO. **Not implemented**; `build-eg` says so
+  rather than guessing. See [docs/EG.md](docs/EG.md).
 
-```text
-0x000  ~PSP header       0x150 bytes  metadata, wrapped keys, sizes, tag, SHA-1
-0x150  payload           aligned      AES-128-CBC, zero IV
-```
+`pspbuild` refuses to run one pipeline against a container that asks for the
+other, and never silently falls back between them.
 
-Internally the payload sits inside a KIRK CMD1 container whose header is folded
-into the `~PSP` header rather than stored separately. Authentication is a SHA-1
-over the header plus two AES-CMAC tags — one over the header region, one over
-the header and the entire payload.
+## Documentation
 
-## Compatibility
-
-A compressed, dynamically sized EBOOT built by this tool boots on a retail PSP
-Slim running official firmware.
-
-Files produced by the PSPSDK reference tool are parsed, verified and decrypted
-correctly; this is covered by a test against a reference-produced fixture.
-
-Output is validated against PPSSPP's own `PrxDecrypter` — an independent
-implementation — which accepts the files and recovers the input byte for byte:
-
-```sh
-scripts/cross-validate.sh /path/to/ppsspp /path/to/module.prx
-```
-
-Output is deterministic: the per-module keys are derived from the payload rather
-than randomly generated, so the same input always yields identical bytes.
+[docs/](docs/) describes the formats themselves rather than the code:
+[PBP.md](docs/PBP.md), [FORMAT.md](docs/FORMAT.md), [MG.md](docs/MG.md),
+[EG.md](docs/EG.md), [KEYS.md](docs/KEYS.md) and
+[COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ## Known limitations
 
@@ -174,7 +196,7 @@ than randomly generated, so the same input always yields identical bytes.
 ## Development
 
 ```sh
-cargo test        # 140 tests: crypto vectors, format, property and CLI tests
+cargo test        # crypto vectors, format, property and CLI tests
 cargo clippy --all-targets
 ```
 
