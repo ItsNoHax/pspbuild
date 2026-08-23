@@ -26,6 +26,7 @@ pub mod inspect;
 pub mod iso;
 pub mod kirk;
 pub mod mg;
+pub mod npdrm;
 pub mod pbp;
 pub mod prx;
 pub mod psp;

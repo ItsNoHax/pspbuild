@@ -88,12 +88,54 @@ CLI test asserts that verbose output does not leak them.
 Only the key slots this tool needs are present. An unknown slot is an error
 rather than a silent wrong-key operation.
 
-## 4. EG path
+## 4. EG path — AMCTRL
 
-Not established. See [EG.md](EG.md) for the open questions — NPDRM tags, per-title
-key derivation, BB-MAC, BB-Cipher and the ECDSA parameters are all unknowns
-pending fixtures, and are deliberately absent from the tables above rather than
-guessed at.
+The symmetric half is established and implemented. The signing half is not.
 
-The NPUMDIMG private key referenced in the project plan is **not** in this
-repository and would need to be supplied.
+### 4.1 Operations
+
+| step | operation | key | notes |
+| --- | --- | --- | --- |
+| header body | BB-Cipher, type 1 mode 2 | `header_key` ^ `version_key` | seed 0 |
+| block data | BB-Cipher, type 1 mode 2 | `header_key` ^ `version_key` | seed = block offset >> 4 |
+| header hash | BB-MAC type 3 over `0x00..0xC0` | `version_key` | |
+| block MAC | BB-MAC type 3 over the encrypted block | `version_key` | |
+| `data_key` | BB-MAC type 3 over the finished block table | `version_key` | a result, not an input |
+| `version_key` | BB-MAC type 1 over the padded content ID, then one AES block | `NPDRM_FIXED_KEY`, then `NPDRM_ENC_KEYS[n]` | fixed-key titles only |
+
+### 4.2 Keys
+
+| key | purpose | size | algorithm | source |
+| --- | --- | --- | --- | --- |
+| KIRK 4/7 slot `0x38` | BB-MAC's block cipher | 16 bytes | AES-128 | published KIRK engine |
+| KIRK 4/7 slot `0x39` | BB-Cipher key derivation | 16 bytes | AES-128 | published KIRK engine |
+| KIRK 4/7 slot `0x63` | BB-Cipher keystream | 16 bytes | AES-128 | published KIRK engine |
+| `AMCTRL_KEY1` | whitens the BB-MAC result | 16 bytes | XOR constant | published AMCTRL |
+| `AMCTRL_KEY2` | whitens the BB-Cipher derivation output | 16 bytes | XOR constant | published AMCTRL |
+| `AMCTRL_KEY3` | whitens the BB-Cipher derivation input | 16 bytes | XOR constant | published AMCTRL |
+| `NPDRM_FIXED_KEY` | finalises the fixed-key BB-MAC | 16 bytes | AES-128 | published AMCTRL |
+| `NPDRM_ENC_KEYS[0..3]` | final step of fixed-key derivation | 3 × 16 bytes | AES-128 | published AMCTRL |
+| `version_key` | per-title content key | 16 bytes | — | supplied, or derived above |
+| `header_key` | per-archive cipher key | 16 bytes | — | KIRK PRNG, fresh per build |
+| `data_key` | commits to the block table | 16 bytes | — | computed, see 4.1 |
+
+The three `AMCTRL_KEY*` values are **whitening constants, not cipher keys** —
+they are XORed into intermediate state and never handed to AES as a key. The
+table separates them on that basis, because calling them all "keys" is exactly
+the conflation this document exists to avoid.
+
+Two firmware variants are absent by design: BB-MAC type 2 and BB-Cipher type 2
+route through KIRK command 5, which encrypts under a key derived from the
+console's fuse ID. That key does not exist off-console. NPUMDIMG uses neither,
+and an implementation could only be confidently wrong.
+
+### 4.3 Still missing
+
+The NPUMDIMG **ECDSA key pair** is still not in this repository. It has been
+supplied — a 0x14-byte private scalar and a 0x28-byte public point — but it is
+not vendored, because nothing yet signs or verifies. Copying it in now would
+put constants in the tree that no test exercises. It goes in alongside a
+working `sign`/`verify` pair, with an entry in the table above.
+
+The curve and the point, scalar and signature representations are likewise
+unestablished. See [EG.md §3.5](EG.md).

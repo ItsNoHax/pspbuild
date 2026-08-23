@@ -9,8 +9,9 @@ from a retail UMD, cross-checked against the `NPUMDIMG_HEADER` declaration in
 is stated as one; where it is a constant `sign_np` happens to write, that is
 said explicitly, because those are not the same claim.
 
-**Status: specification only.** Nothing here is implemented yet. See
-[EG.md](EG.md).
+**Status: primitives implemented, archive not built yet.** BB-MAC, BB-Cipher
+and the fixed-key derivation exist in `src/npdrm` and are verified against a
+real archive's header. Nothing yet *writes* an NPUMDIMG. See [EG.md](EG.md).
 
 ## 1. Layout
 
@@ -106,7 +107,7 @@ Encrypted with BB-Cipher, so it is opaque in the file. Field names follow
 | 0x50 | `unk_16` u32 | 0 | |
 | 0x54 | `lba_start` u32 | 0 | |
 | 0x58 | `unk_24` u32 | 0 | |
-| 0x5C | `nsectors` u32 | `iso_blocks * block_basis - 1` | |
+| 0x5C | `nsectors` u32 | `min(lba_end, 0x6C0BF)` | **clamped** — see below |
 | 0x60 | `unk_32` u32 | 0 | |
 | 0x64 | `lba_end` u32 | `iso_blocks * block_basis - 1` | 555,023 for the reference |
 | 0x68 | `unk_40` u32 | `0x01003FFE` | constant, meaning unknown |
@@ -124,6 +125,25 @@ Encrypted with BB-Cipher, so it is opaque in the file. Field names follow
 | 0x98 | `unk_88` u32 | 0 | |
 | 0x9C | `unk_92` u32 | 0 | |
 
+### 2.3 `nsectors` is clamped, `lba_end` is not
+
+These two fields hold the same expression, but `nsectors` saturates at
+`0x6C0BF` — 442,559, or 864 MiB of 2048-byte sectors, a single-layer UMD's
+capacity. `lba_end` describes the image; `nsectors` describes the medium the
+image claims to sit on, and no real UMD has more sectors than that.
+
+On a disc under 864 MiB the two are equal, which is why this is easy to miss.
+The reference archive is 1.08 GiB, so they differ:
+
+| field | value |
+| --- | ---: |
+| `lba_end` | 555,023 |
+| `nsectors` | 442,559 = `0x6C0BF` |
+
+An earlier revision of this document recorded both as the same expression. The
+clamp was found by decrypting a real header and checking the fields against
+each other rather than against `sign_np.h`.
+
 `disc_id` is rebuilt from the content ID rather than stored independently:
 characters 7..11 of `content_id`, a `-`, then characters 11..16. For
 `UL0000-ULUS10380_00-...` that yields `ULUS-10380`, matching the disc's own
@@ -140,10 +160,10 @@ The order matters: each step covers the output of the previous one.
 1. **Build** the header with `header_key` and `data_key` in place,
    `header_hash` zeroed.
 2. **Randomise** `padding` (0xD0, 8 bytes) from the KIRK PRNG.
-3. **Encrypt the body**: BB-Cipher over `0x40..0xA0`, with mode 1, type 2,
+3. **Encrypt the body**: BB-Cipher over `0x40..0xA0`, **type 1, mode 2**, with
    `header_key` and `version_key`, seed 0.
-4. **BB-MAC** over `0x00..0xC0` — which now includes the encrypted body and
-   both keys — keyed by `version_key`, written to `header_hash` at 0xC0.
+4. **BB-MAC type 3** over `0x00..0xC0` — which now includes the encrypted body
+   and both keys — keyed by `version_key`, written to `header_hash` at 0xC0.
 5. **SHA-1** over a 0xDC-byte buffer: the little-endian length `0xD8` in the
    first four bytes, then header bytes `0x00..0xD8`.
 6. **ECDSA-sign** that digest with the NPUMDIMG private key, producing 40
@@ -151,6 +171,18 @@ The order matters: each step covers the output of the previous one.
 
 So the signature covers everything before it, the BB-MAC covers everything
 before *it*, and the encrypted body is inside both.
+
+Steps 3 and 4 are **verified**: `tests/npdrm.rs` re-derives the version key
+from the content ID, recomputes the BB-MAC over `0x00..0xC0`, and gets the
+`header_hash` already written in a real archive. Decrypting the body with the
+same keys yields the field values in §2.2.
+
+The type and mode in step 3 read "mode 1, type 2" in an earlier revision — the
+parameters transposed. That mattered more than a typo would: type 2 derives
+through KIRK command 5, which uses a key from the console's fuse ID and cannot
+be computed off-console at all, and mode 1 *generates* a `header_key` rather
+than accepting one. Building to the transposed reading would have produced a
+pipeline that could not work.
 
 ### 3.1 The output is not reproducible
 
@@ -184,6 +216,46 @@ compare the *logical* representation, because the raw bytes cannot match. Any
 `data_key` is a *result*, not an input: it can only be computed after every
 block has been encrypted and its table entry filled in. That constrains the
 build order — the table must be finalised before the header can be.
+
+### 4.1 The fixed key
+
+`sceNpDrmGetFixedKey` is now **answered**, and implemented in
+`src/npdrm/fixed_key.rs`:
+
+```text
+key = BB-MAC type 1 over content_id, NUL-padded to 0x30 bytes,
+      finalised with NPDRM_FIXED_KEY as the version key
+key = AES-ECB(NPDRM_ENC_KEYS[(np_flags & 0xFF) - 1], key)   when the low byte is 1..=3
+```
+
+The `0x01000000` bit is what *requests* derivation; the low byte picks which of
+three keys performs the final encryption. `NPUMDIMG` uses `0x01000003`, so the
+third applies. Since the ID is MAC'd over a fixed 0x30-byte field rather than
+over its length, a shorter ID is not a prefix of a longer one — the padding is
+part of the message.
+
+The derived key for the reference archive's ID is confirmed against the
+reference implementation's own reported value, and then confirmed again by
+authenticating the archive's header with it.
+
+### 4.2 What the primitives turned out to be
+
+Both are thinner than their firmware APIs suggest:
+
+- **BB-MAC** is ordinary **AES-CMAC (RFC 4493)** under KIRK slot `0x38`,
+  followed by at most two single-block encryptions.
+- **BB-Cipher** is a **counter-mode keystream** XORed into the data, and is its
+  own inverse. Its seed is a *position* — NPUMDIMG passes each block's byte
+  offset over 16 — so every block is keyed to where it sits and cannot be
+  relocated without re-encryption.
+
+Both are pinned by known-answer tests at every length their internal buffering
+distinguishes. One consequence of testing rather than transliterating: the
+reference's `sceDrmBBMacUpdate` **silently discards 16 buffered bytes** when
+its pad is exactly full and the next update is at most one block. No archive is
+affected, because every NPUMDIMG MAC is computed from a single update, but a
+port of the source would have inherited the fault. `pspbuild` does not
+reproduce it, and a test records the divergence.
 
 The ECDSA key pair is not used raw. `sign_np` concatenates private and public
 into a 0x3C-byte pair, passes it through `encrypt_kirk16_private`, and hands
@@ -222,11 +294,11 @@ For each block, in order:
 2. **Optionally compress** with LZRC. The compressed form is used only if it is
    under `RATIO_LIMIT` = 90% of the original; otherwise the block is stored
    raw. Compressed size is rounded up to 16 bytes.
-3. **Encrypt** with BB-Cipher: mode 1, type 2, `header_key`, `version_key`, and
+3. **Encrypt** with BB-Cipher: type 1, mode 2, `header_key`, `version_key`, and
    a seed of `offset >> 4` — the block's byte offset in 16-byte units, so each
    block is keyed to its own position.
-4. **BB-MAC** the encrypted block, keyed by `version_key`, into the entry's
-   first 16 bytes.
+4. **BB-MAC type 3** over the encrypted block, keyed by `version_key`, into the
+   entry's first 16 bytes.
 5. Write, padded up to a 16-byte boundary.
 
 Compression is per block: an archive can mix compressed and raw blocks, and
@@ -236,6 +308,9 @@ Compression is per block: an archive can mix compressed and raw blocks, and
 
 - Whether the zeroed body fields are required or merely conventional.
 - What `unk_8` = `0x1010` and `unk_40` = `0x01003FFE` mean.
+- The ECDSA curve, and the point, scalar and signature representations. This
+  is the only part of §3 still unimplemented, and the last thing between the
+  primitives and a complete header.
 - Whether a retail Sony EG EBOOT agrees with all of the above. Every statement
   here is derived from `sign_np`'s behaviour, so it describes what `sign_np`
   produces and what the PSP is known to accept from it — not necessarily what

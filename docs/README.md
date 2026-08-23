@@ -25,12 +25,14 @@ KIRK header's fields. Splitting them would mean two documents that each only
 make sense with the other open.
 
 [NPUMDIMG.md](NPUMDIMG.md) now exists: the archive format is specified, derived
-from a reference archive and confirmed by differential runs. It is a
-specification only — nothing in it is implemented.
+from a reference archive and confirmed by differential runs. Its cryptographic
+primitives are implemented in `src/npdrm` and verified against a real archive's
+header; nothing yet *writes* an archive.
 
-`NPDRM.md` is still folded into [EG.md](EG.md). The key derivation, BB-MAC and
-BB-Cipher primitives it would describe are named but not yet characterised, and
-a file of section headings would overstate how much is settled.
+`NPDRM.md` is still folded into [EG.md](EG.md). BB-MAC, BB-Cipher and the fixed
+key are now characterised, but they are documented where they are used —
+[NPUMDIMG.md §3 and §4](NPUMDIMG.md) — rather than in a file of their own,
+since NPUMDIMG is so far the only thing that uses them.
 
 ## Reading order
 
