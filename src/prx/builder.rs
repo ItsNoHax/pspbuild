@@ -50,24 +50,30 @@ pub const MAX_PAYLOAD: u64 = 64 * 1024 * 1024;
 
 /// Default devkit version written into the header.
 ///
-/// Zero, which is what the legacy tool's largest template carries and what
-/// booted on retail OFW. Non-zero values (`0x03070110`, `0x06060010`) were
-/// both rejected on hardware, so do not "improve" this without testing.
+/// The input ELF carries no equivalent field, and the firmware does not
+/// constrain this one: `0x06060010` was confirmed to load just as well. Zero
+/// is kept as the default because it claims compatibility with no particular
+/// firmware, which is the safest thing for a module to say.
 pub const DEFAULT_DEVKIT_VERSION: u32 = 0;
 
 /// The decryption mode the loader uses to select this scheme. Constant across
 /// every genuine module examined that uses this tag.
 pub const DECRYPT_MODE: u8 = 0x0D;
 
-/// `mod_attribute` used by every genuine Sony module examined with this tag.
+/// The `mod_attribute` bit retail firmware requires on an encrypted module.
 ///
-/// The input module's own attribute is normally the right thing to copy, but
-/// all three legacy templates carry `0x0200` regardless of the game, which
-/// suggests the loader expects it on an encrypted module.
-pub const COMPAT_MOD_ATTRIBUTE: u16 = 0x0200;
-
-/// Module version carried by every genuine module examined with this tag.
-pub const COMPAT_MODULE_VERSION: (u8, u8) = (1, 1);
+/// Every genuine Sony module examined with this tag sets it regardless of the
+/// game. Clearing it is the one header change confirmed to stop a module
+/// loading: with it the module boots, without it the firmware reports
+/// `80020148`, everything else held identical.
+///
+/// Its meaning is not documented here because it is not known. PPSSPP tests
+/// only `attribute & 0x1000` (kernel) and ignores this bit, which is why
+/// emulation accepts a module that hardware rejects.
+///
+/// It is OR-ed into the module's own attributes rather than replacing them, so
+/// a module that declares other bits keeps them.
+pub const REQUIRED_MOD_ATTRIBUTE: u16 = 0x0200;
 
 /// Inputs to a build.
 pub struct BuildRequest<'a> {
@@ -81,11 +87,6 @@ pub struct BuildRequest<'a> {
     pub uncompressed_size: u32,
     /// Encryption tag to emit.
     pub tag: &'a TagInfo,
-    /// Use the metadata values observed in genuine Sony modules instead of the
-    /// ones derived from the input, for the few fields where the correct
-    /// choice is ambiguous. Retail OFW rejects the derived values, so this
-    /// defaults to on.
-    pub compat_metadata: bool,
 }
 
 /// A built encrypted PRX plus the numbers describing it.
@@ -127,11 +128,11 @@ fn build_metadata(request: &BuildRequest<'_>, payload_size: u32) -> Result<PspMo
         max: u32::MAX as u64,
     })?;
 
-    let (mod_attribute, version) = if request.compat_metadata {
-        (COMPAT_MOD_ATTRIBUTE, COMPAT_MODULE_VERSION)
-    } else {
-        (module.attributes, (module.version_lo, module.version_hi))
-    };
+    // Everything here is derived from the input except the one attribute bit
+    // the firmware insists on.
+    let mod_attribute = module.attributes | REQUIRED_MOD_ATTRIBUTE;
+    let version = (module.version_lo, module.version_hi);
+    let devkit_version = DEFAULT_DEVKIT_VERSION;
 
     let mut header = PspModuleHeader {
         mod_attribute,
@@ -146,7 +147,7 @@ fn build_metadata(request: &BuildRequest<'_>, payload_size: u32) -> Result<PspMo
         boot_entry: module.entry,
         modinfo_offset: module.modinfo_offset,
         bss_size: module.bss_size(),
-        devkit_version: DEFAULT_DEVKIT_VERSION,
+        devkit_version,
         decrypt_mode: DECRYPT_MODE,
         ..Default::default()
     };
@@ -248,7 +249,6 @@ mod tests {
             compressed: false,
             uncompressed_size: module.elf_size,
             tag: &TAG_DEMO_280,
-            compat_metadata: true,
         }
     }
 
@@ -359,15 +359,40 @@ mod tests {
         );
     }
 
-    /// Hardware rejected `0x03070110` (invented) and `0x06060010`; the value
-    /// that booted was zero, which is also what a genuine template carries.
+    /// Regression: clearing bit 0x200 of `mod_attribute` is the one header
+    /// change confirmed to stop a module loading on retail firmware. It is
+    /// OR-ed in, so a module's own declared bits survive.
     #[test]
-    fn devkit_version_matches_what_booted_on_hardware() {
-        let elf = synthetic_prx("devkit", 512);
+    fn required_attribute_bit_is_always_set() {
+        let elf = synthetic_prx("attrs", 512);
+        let mut module = parse_module(&elf).unwrap();
+
+        let out = build(&request(&module, &[0u8; 256])).unwrap();
+        let meta = PspModuleHeader::parse(&out.data).unwrap();
+        assert_eq!(
+            meta.mod_attribute & REQUIRED_MOD_ATTRIBUTE,
+            REQUIRED_MOD_ATTRIBUTE
+        );
+
+        // A module declaring its own attributes keeps them.
+        module.attributes = 0x0001 | 0x1000;
+        let out = build(&request(&module, &[0u8; 256])).unwrap();
+        let meta = PspModuleHeader::parse(&out.data).unwrap();
+        assert_eq!(meta.mod_attribute, 0x1000 | 0x0200 | 0x0001);
+    }
+
+    /// Confirmed on hardware to be unconstrained: 0 and 0x06060010 both load.
+    /// Zero is the default because it claims no particular firmware.
+    #[test]
+    fn version_and_devkit_come_from_the_input() {
+        let elf = synthetic_prx("derived", 512);
         let module = parse_module(&elf).unwrap();
         let out = build(&request(&module, &[0u8; 256])).unwrap();
         let meta = PspModuleHeader::parse(&out.data).unwrap();
-        assert_eq!(meta.devkit_version, 0);
+
+        assert_eq!(meta.module_ver_lo, module.version_lo);
+        assert_eq!(meta.module_ver_hi, module.version_hi);
+        assert_eq!(meta.devkit_version, DEFAULT_DEVKIT_VERSION);
     }
 
     #[test]

@@ -34,12 +34,6 @@ pub enum Command {
         /// Output format.
         #[arg(long, value_enum, default_value_t = FormatArg::Psp)]
         format: FormatArg,
-
-        /// Derive the ambiguous header fields from the input module instead of
-        /// using the values genuine Sony modules carry. Retail firmware
-        /// rejects the derived values; this is for investigation only.
-        #[arg(long)]
-        derived_metadata: bool,
     },
 
     /// Print a summary of a PRX, encrypted or not.

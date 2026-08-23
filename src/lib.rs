@@ -56,12 +56,6 @@ pub struct EncryptOptions {
     pub compress: bool,
     /// Output format.
     pub format: Format,
-    /// Use the metadata values observed in genuine Sony modules for the few
-    /// header fields where the correct choice is ambiguous.
-    ///
-    /// Defaults to on: retail OFW rejects a module whose `mod_attribute` and
-    /// module version are derived from the input instead.
-    pub compat_metadata: bool,
 }
 
 impl Default for EncryptOptions {
@@ -71,7 +65,6 @@ impl Default for EncryptOptions {
             // template, and compression only shrinks the result.
             compress: true,
             format: Format::Psp,
-            compat_metadata: true,
         }
     }
 }
@@ -152,7 +145,6 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
         compressed,
         uncompressed_size: module.elf_size,
         tag: &TAG_DEMO_280,
-        compat_metadata: options.compat_metadata,
     })?;
 
     Ok(Encrypted {

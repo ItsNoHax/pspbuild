@@ -36,13 +36,11 @@ fn run(cli: &Cli) -> Result<(), Error> {
             output,
             no_compress,
             format,
-            derived_metadata,
         } => {
             let data = read(input)?;
             let options = EncryptOptions {
                 compress: !no_compress,
                 format: (*format).into(),
-                compat_metadata: !derived_metadata,
             };
 
             let encrypted = encrypt_prx(&data, &options)?;

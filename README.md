@@ -72,14 +72,10 @@ prx-encrypter decrypt game.enc.prx -o game.dec.prx
 Options for `encrypt`:
 
 ```text
--o, --output <FILE>      output path (default: <input>.enc.<ext>)
-    --no-compress        skip gzip compression of the payload
-    --format <FMT>       psp (default) or pspemu
-    --derived-metadata   derive the ambiguous header fields from the input
-                         instead of using the values retail firmware wants;
-                         produces a module that will not boot (investigation
-                         only)
--v, --verbose            report each stage on stderr
+-o, --output <FILE>         output path (default: <input>.enc.<ext>)
+    --no-compress           skip gzip compression of the payload
+    --format <FMT>          psp (default) or pspemu
+-v, --verbose               report each stage on stderr
 ```
 
 Normal runs print nothing on stdout and exit non-zero on failure, so the tool
@@ -161,11 +157,11 @@ than randomly generated, so the same input always yields identical bytes.
 
 ## Known limitations
 
-- **Three header fields are fixed rather than derived.** `mod_attribute`,
-  the module version and `devkit_version` are written as genuine Sony modules
-  carry them, because retail firmware rejects a module that derives them from
-  the input. See [docs/FORMAT.md](docs/FORMAT.md#8-fields-the-firmware-is-fussy-about).
-  Which of the three is load-bearing has not been isolated.
+- **One header bit is forced.** `mod_attribute` always has bit `0x0200` set,
+  OR-ed into the module's own attributes: retail firmware will not load an
+  encrypted module without it. Isolated on hardware one field at a time, so
+  everything else is derived from the input. What the bit means is not known —
+  see [docs/FORMAT.md](docs/FORMAT.md#8-the-one-field-the-firmware-insists-on).
 - **Tested on one console.** A PSP Slim on official firmware. Other models and
   firmware revisions are unverified.
 - **One tag.** Only `0xADF305F0` (the 2.80 demo scheme) is emitted. This is the
@@ -178,7 +174,7 @@ than randomly generated, so the same input always yields identical bytes.
 ## Development
 
 ```sh
-cargo test        # 137 tests: crypto vectors, format, property and CLI tests
+cargo test        # 140 tests: crypto vectors, format, property and CLI tests
 cargo clippy --all-targets
 ```
 

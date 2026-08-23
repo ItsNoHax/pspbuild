@@ -33,9 +33,9 @@ There is nothing else — no trailer, no padding beyond the AES block alignment.
 offset  len    field                 static?    notes
 ------  -----  --------------------  ---------  --------------------------------
 0x000   0x004  "~PSP" magic          static     format identifier
-0x004   0x002  mod_attribute         static     0x0200 (see 7a)
+0x004   0x002  mod_attribute         derived    | 0x0200 required (see 8)
 0x006   0x002  comp_attribute        derived    bit 0 = payload is gzipped
-0x008   0x002  module version        static     1.1 (see 7a)
+0x008   0x002  module version        derived    from the input module info
 0x00A   0x01C  module name           derived    from the input module info
 0x026   0x001  mod_version           static     1
 0x027   0x001  nsegments             derived    count of PT_LOAD segments
@@ -48,7 +48,7 @@ offset  len    field                 static?    notes
 0x044   0x010  seg_address[4]        derived    per segment p_vaddr
 0x054   0x010  seg_size[4]           derived    per segment p_filesz (not p_memsz)
 0x064   0x014  reserved[5]           static     zero
-0x078   0x004  devkit_version        static     0 (see 7a)
+0x078   0x004  devkit_version        free       0; unconstrained (see 8)
 0x07C   0x001  decrypt_mode          static     0x0D for this scheme
 0x07D   0x001  padding               static     zero
 0x07E   0x002  overlap_size          static     zero
@@ -156,30 +156,35 @@ Only these, and each for a stated reason:
 | `decrypt_mode` = 0x0D | selects this decryption path in the loader |
 | `data_offset` = 0x80 | the predata is the metadata region, whose size is fixed |
 | signature region = zeros | required by this scheme |
-| `mod_attribute` = 0x0200 | see below — retail firmware rejects other values |
-| module version = 1.1 | as above |
-| `devkit_version` = 0 | as above |
+| `mod_attribute` bit 0x0200 | see below — retail firmware will not load a module without it |
 
 Everything else is computed.
 
-## 8. Fields the firmware is fussy about
+## 8. The one field the firmware insists on
 
-Three header fields look like they should be derived from the input module.
-They are not: retail OFW rejects a module that derives them. This was
-established on hardware, one variable at a time.
+`mod_attribute` (0x04) must have **bit 0x0200** set. This was established on
+hardware by varying one field at a time against an otherwise byte-identical
+build:
 
-| field | derived value | value that boots |
+| build | change from the working baseline | result |
 | --- | --- | --- |
-| `mod_attribute` (0x04) | from the module info (0x0000) | **0x0200** |
-| `module_ver_hi` (0x09) | from the module info (0) | **1** |
-| `devkit_version` (0x78) | — (no equivalent in an ELF) | **0** |
+| baseline | — | boots |
+| ISO1 | `mod_attribute` 0x0200 → 0x0000 | **does not load (80020148)** |
+| ISO2 | module version 1.1 → 1.0 (derived) | boots |
+| ISO3 | `devkit_version` 0 → 0x06060010 | boots |
 
-All three legacy templates carry exactly these values regardless of which game
-they came from, which is the tell. `--derived-metadata` restores the derived
-values for anyone wanting to investigate further; it produces a module that
-does not boot.
+So the module version and `devkit_version` are *not* constrained and are
+derived from the input like everything else. Only the attribute bit is
+load-bearing. It is OR-ed into the module's own attributes rather than
+replacing them.
 
-Two fields nearby are easy to get wrong in the other direction:
+What the bit means is not known. It is set on all three legacy templates
+regardless of which game they came from. PPSSPP tests only
+`attribute & 0x1000` (the kernel-module bit) and ignores 0x0200 entirely —
+which is exactly why every software check available accepted the build that
+hardware rejected.
+
+Two nearby fields are easy to get wrong in the other direction:
 
 - **`seg_size` is the segment's size in the file (`p_filesz`), not its memory
   size (`p_memsz`).** The header tracks uninitialised memory separately in
