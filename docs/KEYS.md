@@ -40,9 +40,10 @@ Two entries deserve emphasis:
 - **(9) is a local choice, not a format requirement.** The per-module keys are
   wrapped with a published key and so provide no secrecy. Deriving them from
   the payload rather than randomly makes output reproducible. The domain string
-  is versioned and deliberately still reads `prx-encrypter/v1`: it feeds every
-  output byte, so changing it would invalidate reproducibility against builds
-  already verified on hardware.
+  is `pspbuild/v1`; it feeds every output byte, so bumping it re-keys every
+  build and discards any hardware validation done before it. A test pins both
+  the string and the keys it derives, so that can only happen deliberately. See
+  [COMPATIBILITY.md §4.1](COMPATIBILITY.md).
 
 ## 2. Tags
 

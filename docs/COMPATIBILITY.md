@@ -6,13 +6,17 @@ What has actually been tested, and what has not.
 
 | target | result |
 | --- | --- |
-| PSP Slim, official firmware | MG EBOOT boots |
+| PSP Slim, official firmware | MG EBOOT boots — **but see §4.2** |
 | other PSP models | untested |
 | other firmware revisions | untested |
 
 A compressed, dynamically sized MG EBOOT built by this tool boots on a retail
 PSP Slim running official firmware. That is one console. Nothing here should be
 read as a claim about the whole PSP line.
+
+That result was obtained before the key-derivation domain was bumped, so it
+applies to the format and the header fields rather than to the exact bytes the
+tool emits today. Section 4.2 explains what does and does not carry over.
 
 Two header fields were isolated on that hardware by varying one at a time
 against an otherwise byte-identical build:
@@ -64,16 +68,31 @@ rather than randomly generated, so the same input always produces identical
 bytes. This is a local design choice, not a format requirement; see
 [KEYS.md §1](KEYS.md).
 
-The derivation domain string still reads `prx-encrypter/v1` after the rename to
-`pspbuild`. It names a derivation domain rather than the project, and it feeds
-every output byte, so renaming it would silently change every output and break
-reproducibility against builds already verified on hardware. It is versioned so
-it can be bumped deliberately if the derivation itself ever changes.
+### 4.1 The derivation domain was bumped
 
-Verified across the rename and the module refactor: `pspbuild encrypt-prx` on
-the original AngleZero EBOOT still produces output byte-identical to the build
-confirmed booting on hardware, and `pspbuild build-mg --base` on the same
-EBOOT reproduces it exactly.
+The key-derivation domain is `pspbuild/v1`. It was `prx-encrypter/v1` until the
+rename, and bumping it changed every output byte: rebuilding the AngleZero
+EBOOT produces the same 431,844 bytes as before, of which 146,690 differ.
+
+That is the expected signature of a re-key rather than a format change. Sizing
+and structure are untouched — only the per-module keys, and therefore the
+ciphertext, key block and hashes, are new. Confirmed by decrypting both builds:
+the recovered payloads are byte-identical.
+
+`prx::builder` pins the domain and its three derived keys in a test, so a future
+accidental change fails loudly instead of silently producing a differently-keyed
+build.
+
+### 4.2 What this cost
+
+Hardware validation does not carry across a domain bump. The boot test that
+confirmed the old build says nothing about the new one, and the current build
+is **pending re-validation on hardware**.
+
+The risk is low but not zero: none of the header fields the firmware is fussy
+about changed, and the independent checks all pass. But those checks passed for
+builds the console rejected before — see section 1 — so only a boot test
+settles it.
 
 ## 5. Known limitations
 

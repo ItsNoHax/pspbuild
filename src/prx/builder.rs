@@ -96,6 +96,21 @@ pub struct BuildOutput {
     pub aligned_payload_size: u32,
 }
 
+/// Namespace for the per-module key derivation.
+///
+/// This is not a format field. It separates this crate's derivation from any
+/// other use of the same hash, and it feeds every output byte — two builds with
+/// different domains produce different keys, hence different ciphertext, for
+/// identical input.
+///
+/// Changing it is therefore a deliberate act with a cost: output stops matching
+/// anything built before, so the result needs re-validating on hardware rather
+/// than inherited from an earlier boot test. The version suffix exists to make
+/// such a change explicit. It was last bumped when the project was renamed from
+/// `prx-encrypter` to `pspbuild`; the derivation itself did not change, only the
+/// namespace it runs in.
+pub const DERIVATION_DOMAIN: &[u8] = b"pspbuild/v1";
+
 /// Derive the per-module AES and CMAC keys deterministically.
 ///
 /// These keys are wrapped with the publicly known KIRK1 key, so they provide no
@@ -105,12 +120,7 @@ pub struct BuildOutput {
 fn derive_keys(payload: &[u8], uncompressed_size: u32) -> ([u8; 16], [u8; 16], [u8; 16]) {
     let derive = |domain: &[u8]| -> [u8; 16] {
         let digest = sha1_chunks(&[
-            // Deliberately not renamed with the crate. This string only
-            // separates derivation domains, but it feeds every output byte, so
-            // changing it would silently invalidate reproducibility against
-            // every EBOOT built before the rename. Bump the version suffix if
-            // the derivation itself ever changes.
-            b"prx-encrypter/v1",
+            DERIVATION_DOMAIN,
             domain,
             &uncompressed_size.to_le_bytes(),
             payload,
@@ -405,5 +415,27 @@ mod tests {
         let elf = synthetic_prx("m", 512);
         let module = parse_module(&elf).unwrap();
         assert!(build(&request(&module, &[])).is_err());
+    }
+    #[test]
+    fn the_derivation_domain_is_pinned() {
+        // The domain feeds every output byte, so changing it changes every
+        // build and invalidates any hardware validation done before it. That
+        // should be a deliberate act, not something a rename does on the way
+        // past — so pin both the string and what it derives.
+        assert_eq!(DERIVATION_DOMAIN, b"pspbuild/v1");
+
+        let (aes, cmac, id) = derive_keys(b"a known payload", 4096);
+        assert_eq!(hex(&aes), "1678d55365a7ee555751d763ef704c30");
+        assert_eq!(hex(&cmac), "fbe6207dc7a902dd420dd544c24ebc86");
+        assert_eq!(hex(&id), "cb4ca62504563eb07c66acb24716ec78");
+
+        // The three domains must not collide with one another.
+        assert_ne!(aes, cmac);
+        assert_ne!(cmac, id);
+        assert_ne!(aes, id);
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
