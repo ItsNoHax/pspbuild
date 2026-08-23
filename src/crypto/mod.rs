@@ -5,4 +5,5 @@
 
 pub mod aes;
 pub mod cmac;
+pub mod ec;
 pub mod sha1;

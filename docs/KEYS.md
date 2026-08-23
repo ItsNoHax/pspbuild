@@ -129,13 +129,26 @@ route through KIRK command 5, which encrypts under a key derived from the
 console's fuse ID. That key does not exist off-console. NPUMDIMG uses neither,
 and an implementation could only be confidently wrong.
 
-### 4.3 Still missing
+### 4.3 The NPUMDIMG signing key
 
-The NPUMDIMG **ECDSA key pair** is still not in this repository. It has been
-supplied — a 0x14-byte private scalar and a 0x28-byte public point — but it is
-not vendored, because nothing yet signs or verifies. Copying it in now would
-put constants in the tree that no test exercises. It goes in alongside a
-working `sign`/`verify` pair, with an entry in the table above.
+Now vendored, because there is finally code that uses it.
 
-The curve and the point, scalar and signature representations are likewise
-unestablished. See [EG.md §3.5](EG.md).
+| key | purpose | size | algorithm | source |
+| --- | --- | --- | --- | --- |
+| `NPUMDIMG_PRIVATE_KEY` | signs an NPUMDIMG header | 20 bytes | ECDSA scalar | published, recovered |
+| `NPUMDIMG_PUBLIC_KEY` | verifies one | 40 bytes | ECDSA point `x \|\| y` | published, recovered |
+
+The pair is **checked, not trusted**: a test multiplies the private scalar by
+the curve's base point and requires the result to equal the public point
+exactly. Two constants that did not actually form a key pair would otherwise
+produce signatures that silently fail on hardware.
+
+The curve is KIRK's own 160-bit prime curve, given in full in
+[NPUMDIMG.md §4.3](NPUMDIMG.md), along with the checks establishing that its
+parameters are internally consistent.
+
+This key is not a secret and is not treated as one — it is in every tool that
+signs this format. The "never print key bytes" rule still applies to it for
+consistency, but the reason there is tidiness rather than secrecy. The
+side-channel properties of the signing code are correspondingly irrelevant, and
+[`crate::crypto::ec`] says so explicitly rather than leaving it implied.

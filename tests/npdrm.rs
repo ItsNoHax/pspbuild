@@ -20,6 +20,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use pspbuild::crypto::aes::Key;
+use pspbuild::npdrm::keys::NPUMDIMG_PUBLIC_KEY;
 use pspbuild::npdrm::{BbMacType, bbcipher, bbmac, fixed_key};
 use pspbuild::pbp::{PbpSection, parse_layout};
 
@@ -195,6 +196,67 @@ fn the_body_decrypts_to_coherent_fields() {
     let cid = content_id(&header);
     let expected = format!("{}-{}", &cid[7..11], &cid[11..16]);
     assert_eq!(disc_id, expected, "disc_id disagrees with the content ID");
+}
+
+/// The archive's ECDSA signature must verify under the published public key.
+///
+/// This is the only check in the project that exercises the signing path
+/// against something we did not produce. A signature cannot be recomputed and
+/// compared — it depends on a random nonce — so verifying a real one is the
+/// only way to confirm the curve parameters, the digest range and the R/S
+/// encoding all at once. Any one of them wrong and this fails.
+#[test]
+fn the_archives_signature_verifies_under_the_published_key() {
+    let header = header_or_skip!();
+    assert!(
+        pspbuild::npdrm::verify_header(&header).expect("a full-size header"),
+        "the reference archive's signature did not verify"
+    );
+}
+
+/// The digest must be over the header alone, with no length prefix.
+///
+/// The reference hands KIRK a buffer whose first four bytes are the length
+/// 0xD8, which reads like a length-prefixed message and was documented as one.
+/// It is really a command header that KIRK strips. This pins the distinction
+/// against a real signature, since that is the only thing that can tell them
+/// apart.
+#[test]
+fn the_signed_digest_excludes_the_kirk_length_word() {
+    let header = header_or_skip!();
+    let signature =
+        pspbuild::npdrm::Signature::from_bytes(&header[field::SIGNATURE]).expect("40 bytes");
+
+    let bare = pspbuild::npdrm::header_digest(&header).expect("digest");
+    assert!(
+        pspbuild::npdrm::ecdsa::verify(&bare, &NPUMDIMG_PUBLIC_KEY, &signature),
+        "the header-only digest should verify"
+    );
+
+    let mut prefixed = 0xD8u32.to_le_bytes().to_vec();
+    prefixed.extend_from_slice(&header[..0xD8]);
+    let prefixed = pspbuild::crypto::sha1::sha1(&prefixed);
+    assert!(
+        !pspbuild::npdrm::ecdsa::verify(&prefixed, &NPUMDIMG_PUBLIC_KEY, &signature),
+        "the length-prefixed digest should not verify"
+    );
+}
+
+/// Re-signing a real header with our own key must produce something that
+/// verifies, which is the closest we can get to a differential test of a
+/// non-reproducible output.
+#[test]
+fn we_can_re_sign_a_real_header() {
+    let mut header = header_or_skip!();
+    let original = header[field::SIGNATURE].to_vec();
+
+    pspbuild::npdrm::sign_header(&mut header, &[0x5Au8; 20]).expect("signing succeeds");
+    assert_ne!(
+        header[field::SIGNATURE].to_vec(),
+        original,
+        "our nonce should give a different signature than Sony's tooling did"
+    );
+    assert!(pspbuild::npdrm::verify_header(&header).unwrap());
 }
 
 /// A fixed-key archive is decryptable by anyone who knows its content ID, so

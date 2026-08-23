@@ -9,9 +9,11 @@ from a retail UMD, cross-checked against the `NPUMDIMG_HEADER` declaration in
 is stated as one; where it is a constant `sign_np` happens to write, that is
 said explicitly, because those are not the same claim.
 
-**Status: primitives implemented, archive not built yet.** BB-MAC, BB-Cipher
-and the fixed-key derivation exist in `src/npdrm` and are verified against a
-real archive's header. Nothing yet *writes* an NPUMDIMG. See [EG.md](EG.md).
+**Status: header complete, body not started.** The whole header crypto chain
+of §3 — BB-Cipher, BB-MAC, the fixed key, SHA-1 and ECDSA — is implemented in
+`src/npdrm` and verified against a real archive, including its signature.
+The block table (§5) and block encryption (§6) are specified but not built.
+See [EG.md](EG.md).
 
 ## 1. Layout
 
@@ -164,25 +166,18 @@ The order matters: each step covers the output of the previous one.
    `header_key` and `version_key`, seed 0.
 4. **BB-MAC type 3** over `0x00..0xC0` — which now includes the encrypted body
    and both keys — keyed by `version_key`, written to `header_hash` at 0xC0.
-5. **SHA-1** over a 0xDC-byte buffer: the little-endian length `0xD8` in the
-   first four bytes, then header bytes `0x00..0xD8`.
+5. **SHA-1** over header bytes `0x00..0xD8`, and nothing else.
 6. **ECDSA-sign** that digest with the NPUMDIMG private key, producing 40
-   bytes at 0xD8.
+   bytes at 0xD8 as `R || S`.
 
 So the signature covers everything before it, the BB-MAC covers everything
 before *it*, and the encrypted body is inside both.
 
-Steps 3 and 4 are **verified**: `tests/npdrm.rs` re-derives the version key
-from the content ID, recomputes the BB-MAC over `0x00..0xC0`, and gets the
-`header_hash` already written in a real archive. Decrypting the body with the
-same keys yields the field values in §2.2.
-
-The type and mode in step 3 read "mode 1, type 2" in an earlier revision — the
-parameters transposed. That mattered more than a typo would: type 2 derives
-through KIRK command 5, which uses a key from the console's fuse ID and cannot
-be computed off-console at all, and mode 1 *generates* a `header_key` rather
-than accepting one. Building to the transposed reading would have produced a
-pipeline that could not work.
+**All six steps are implemented and verified against a real archive.**
+`tests/npdrm.rs` re-derives the version key from the content ID, recomputes the
+BB-MAC over `0x00..0xC0` and gets the `header_hash` already in the file,
+decrypts the body to the field values in §2.2, and verifies the ECDSA
+signature under the published public key.
 
 ### 3.1 The output is not reproducible
 
@@ -202,6 +197,29 @@ This is what the project plan anticipated in §7: differential testing has to
 compare the *logical* representation, because the raw bytes cannot match. Any
 `pspbuild` implementation will need a way to inject a fixed `header_key` and
 `padding` for testing, or the comparison is impossible.
+
+### 3.2 The digest is not length-prefixed
+
+Step 5 read differently in an earlier revision: "SHA-1 over a 0xDC-byte buffer,
+the little-endian length `0xD8` first, then the header". The reference does
+build exactly that buffer — but those four bytes are a **KIRK command header**,
+not message data. Command 11 reads a `data_size` from them and hashes only what
+follows.
+
+This one is invisible to inspection. Both readings are self-consistent, both
+produce a 20-byte digest, and nothing in the header says which is right. The
+only thing that can distinguish them is a real signature, and a test now pins
+it both ways: the header-only digest verifies, the length-prefixed one does
+not.
+
+### 3.3 BB-Cipher's type and mode were transposed
+
+Step 3 read "mode 1, type 2" in an earlier revision, the two parameters read
+off the reference's argument list in the wrong order. That mattered more than a
+typo would: type 2 derives through KIRK command 5, which uses a key from the
+console's fuse ID and cannot be computed off-console at all, and mode 1
+*generates* a `header_key` rather than accepting one. Building to the
+transposed reading would have produced a pipeline that could not work.
 
 ## 4. Keys
 
@@ -257,9 +275,42 @@ affected, because every NPUMDIMG MAC is computed from a single update, but a
 port of the source would have inherited the fault. `pspbuild` does not
 reproduce it, and a test records the divergence.
 
-The ECDSA key pair is not used raw. `sign_np` concatenates private and public
-into a 0x3C-byte pair, passes it through `encrypt_kirk16_private`, and hands
-the 0x20-byte result plus the 0x14-byte digest to `KIRK_CMD_ECDSA_SIGN`.
+### 4.3 The ECDSA curve — **answered**
+
+KIRK signs on a 160-bit prime curve of Sony's own, not a published standard,
+which is why no off-the-shelf ECDSA library applies:
+
+```text
+p = FFFFFFFF FFFFFFFF 00000001 FFFFFFFF FFFFFFFF
+a = p - 3
+b = A68BEDC3 3418029C 1D3CE33B 9A321FCC BB9E0F0B
+n = FFFFFFFF FFFFFFFE FFFFB5AE 3C523E63 944F2127
+G = (128EC425 6487FD8F DF64E243 7BC0A1F6 D5AFDE2C,
+     5958557E B1DB0012 60425524 DBC379D5 AC5F4ADF)
+```
+
+Every parameter is checked rather than transcribed: `a` really is `p - 3`, `G`
+satisfies the curve equation, `n * G` really is the point at infinity, and the
+published private scalar really does generate the published public point. The
+signature itself is textbook ECDSA — `R = x(kG)`, `S = (e + Rd)/k mod n` — and
+the 0x28-byte field is `R || S`, each 20 bytes big-endian.
+
+The same curve backs KIRK commands 12, 13, 16 and 17. Command 1 uses a
+different `b`, `n` and `G` over the same `p`.
+
+### 4.4 The KIRK key wrapping is not part of the format
+
+`sign_np` does not hand the private key to `KIRK_CMD_ECDSA_SIGN` directly. It
+concatenates private and public into 0x3C bytes, runs `encrypt_kirk16_private`
+over the first 0x20, and passes that; the command then runs
+`decrypt_kirk16_private` to get it back.
+
+Both halves key off the console's **fuse ID**, so on hardware this binds a
+wrapped key to one machine. Off-console the two are exact inverses under
+whatever fuse ID is configured, so the pair cancels and the signer receives the
+plain scalar. It is an artifact of the hardware key-loading interface, not of
+the signature, and `pspbuild` omits it: reproducing a round trip that provably
+changes nothing would only obscure what is signed.
 
 ## 5. Block table
 
@@ -308,9 +359,8 @@ Compression is per block: an archive can mix compressed and raw blocks, and
 
 - Whether the zeroed body fields are required or merely conventional.
 - What `unk_8` = `0x1010` and `unk_40` = `0x01003FFE` mean.
-- The ECDSA curve, and the point, scalar and signature representations. This
-  is the only part of §3 still unimplemented, and the last thing between the
-  primitives and a complete header.
+- The block table and block encryption are specified in §5 and §6 but not yet
+  implemented. The header is complete; the body is not.
 - Whether a retail Sony EG EBOOT agrees with all of the above. Every statement
   here is derived from `sign_np`'s behaviour, so it describes what `sign_np`
   produces and what the PSP is known to accept from it — not necessarily what
