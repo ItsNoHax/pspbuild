@@ -11,6 +11,7 @@ against a real file — that is stated.
 | [FORMAT.md](FORMAT.md) | the encrypted PRX: the `~PSP` header, the KIRK CMD1 container, and why dynamic sizing is possible |
 | [MG.md](MG.md) | the MG security path end to end, and how it differs from the legacy tools |
 | [EG.md](EG.md) | the EG/NPDRM path: what is known, what is not, and what would unblock it |
+| [NPUMDIMG.md](NPUMDIMG.md) | the EG archive format, byte by byte — header, block table, block crypto |
 | [KEYS.md](KEYS.md) | the key/tag matrix, and the distinction between category, tag, key and format |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | what has been tested, on what, and what has not |
 
@@ -23,11 +24,13 @@ are hard to explain apart, since the header's whole purpose is to scatter the
 KIRK header's fields. Splitting them would mean two documents that each only
 make sense with the other open.
 
-`NPDRM.md` and `NPUMDIMG.md` are likewise folded into [EG.md](EG.md) for now.
-There is not yet a specification to put in them; what exists is a list of open
-questions, and spreading that across three files would overstate how much is
-settled. They should be split out once the reverse engineering produces
-something worth separating.
+[NPUMDIMG.md](NPUMDIMG.md) now exists: the archive format is specified, derived
+from a reference archive and confirmed by differential runs. It is a
+specification only — nothing in it is implemented.
+
+`NPDRM.md` is still folded into [EG.md](EG.md). The key derivation, BB-MAC and
+BB-Cipher primitives it would describe are named but not yet characterised, and
+a file of section headings would overstate how much is settled.
 
 ## Reading order
 
