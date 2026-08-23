@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 use crate::sfo::{Category, Sfo};
 
 pub use builder::{PbpBuilder, build_pbp};
-pub use parser::parse_pbp;
+pub use parser::{PbpLayout, parse_layout, parse_pbp};
 
 /// PBP magic, `"\0PBP"`.
 pub const PBP_MAGIC: [u8; 4] = [0x00, b'P', b'B', b'P'];

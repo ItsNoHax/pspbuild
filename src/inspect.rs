@@ -6,7 +6,7 @@
 //! and the difference is in `PARAM.SFO` and in what `DATA.PSP` and `DATA.PSAR`
 //! actually hold.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pbp::{Pbp, PbpSection};
 use crate::psp::header::PspModuleHeader;
 use crate::sfo::{Category, Sfo};
@@ -214,6 +214,116 @@ impl Inspection {
     pub fn category(&self) -> Option<&Category> {
         self.container.as_ref().and_then(|c| c.category.as_ref())
     }
+}
+
+/// Largest section this will read in full while streaming a container.
+///
+/// Enough for any `PARAM.SFO` or a `~PSP` module header, and far below the
+/// gigabyte-scale `DATA.PSAR` that makes streaming necessary in the first
+/// place.
+const STREAM_SECTION_LIMIT: u32 = 1 << 20;
+
+/// Inspect a PBP without loading it into memory.
+///
+/// An EG container is routinely over a gigabyte, nearly all of it `DATA.PSAR`,
+/// so reading the whole file to report its structure is the wrong shape. Only
+/// the header, the small sections and a magic-length prefix of each large one
+/// are read.
+pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
+    mut source: R,
+    total_size: u64,
+) -> Result<Inspection> {
+    use std::io::SeekFrom;
+
+    let mut header = [0u8; crate::pbp::HEADER_SIZE];
+    source.read_exact(&mut header).map_err(Error::BareIo)?;
+    let layout = crate::pbp::parse_layout(&header, total_size)?;
+
+    // Read a section, capped: small ones whole, large ones just far enough to
+    // identify.
+    let mut read_section = |offset: u32, size: u32| -> Result<Vec<u8>> {
+        let want = size.min(STREAM_SECTION_LIMIT) as usize;
+        if want == 0 {
+            return Ok(Vec::new());
+        }
+        source
+            .seek(SeekFrom::Start(u64::from(offset)))
+            .map_err(Error::BareIo)?;
+        let mut buf = vec![0u8; want];
+        source.read_exact(&mut buf).map_err(Error::BareIo)?;
+        Ok(buf)
+    };
+
+    let mut sections = Vec::with_capacity(crate::pbp::SECTION_COUNT);
+    let mut param_sfo_raw = Vec::new();
+    let mut data_psp_prefix = Vec::new();
+
+    for section in PbpSection::ALL {
+        let (offset, size) = layout.section(section);
+        let prefix = read_section(offset, size)?;
+        sections.push(SectionReport {
+            section,
+            offset,
+            size,
+            format: FileFormat::detect(&prefix),
+        });
+        match section {
+            PbpSection::ParamSfo => param_sfo_raw = prefix,
+            PbpSection::DataPsp => data_psp_prefix = prefix,
+            _ => {}
+        }
+    }
+
+    let mut report = ContainerReport {
+        version: layout.version,
+        category: None,
+        title: None,
+        system_version: None,
+        param_sfo_error: None,
+        sections,
+    };
+
+    let mut param_sfo = None;
+    if param_sfo_raw.is_empty() {
+        report.param_sfo_error = Some("PBP has no PARAM.SFO section".into());
+    } else {
+        match Sfo::parse(&param_sfo_raw) {
+            Ok(sfo) => {
+                report.category = sfo.category();
+                report.title = sfo.get_text("TITLE");
+                report.system_version = sfo.get_text("PSP_SYSTEM_VER");
+                param_sfo = Some(sfo);
+            }
+            Err(e) => report.param_sfo_error = Some(e.to_string()),
+        }
+    }
+
+    let (module, module_error) = if data_psp_prefix.is_empty() {
+        (None, Some("DATA.PSP is empty".to_string()))
+    } else if report.category.as_ref().is_some_and(Category::is_npdrm) {
+        let category = report.category.as_ref().expect("checked above");
+        (
+            None,
+            Some(format!(
+                "{category} is an NPDRM Store download; not supported yet"
+            )),
+        )
+    } else {
+        match inspect_prx(&data_psp_prefix) {
+            Ok(info) => (Some(info), None),
+            Err(e) => (None, Some(e.to_string())),
+        }
+    };
+
+    Ok(Inspection {
+        format: FileFormat::Pbp,
+        total_size,
+        container: Some(report),
+        iso: None,
+        param_sfo,
+        module,
+        module_error,
+    })
 }
 
 /// Inspect a UMD image without loading it into memory.
@@ -561,6 +671,72 @@ mod tests {
 
         // Truncating before sector 16 must not still look like an ISO.
         assert_ne!(FileFormat::detect(&iso[..1000]), FileFormat::Iso9660);
+    }
+
+    #[test]
+    fn streaming_a_container_agrees_with_reading_it_whole() {
+        let data = mg_eboot();
+        let whole = inspect(&data).unwrap();
+        let streamed = inspect_pbp(std::io::Cursor::new(&data), data.len() as u64).unwrap();
+
+        assert_eq!(streamed.format, whole.format);
+        assert_eq!(streamed.total_size, whole.total_size);
+        assert_eq!(streamed.category(), whole.category());
+
+        let (a, b) = (
+            streamed.container.as_ref().unwrap(),
+            whole.container.as_ref().unwrap(),
+        );
+        assert_eq!(a.version, b.version);
+        assert_eq!(a.title, b.title);
+        assert_eq!(a.system_version, b.system_version);
+        assert_eq!(a.sections.len(), b.sections.len());
+        for (s, w) in a.sections.iter().zip(&b.sections) {
+            assert_eq!(
+                (s.section, s.offset, s.size, s.format),
+                (w.section, w.offset, w.size, w.format)
+            );
+        }
+        assert_eq!(
+            streamed.module.map(|m| m.module_name),
+            whole.module.map(|m| m.module_name)
+        );
+    }
+
+    #[test]
+    fn streaming_reads_only_a_bounded_amount_of_a_huge_section() {
+        // The point of streaming: a gigabyte-scale DATA.PSAR must be identified
+        // from its magic without being read. Build a container whose archive is
+        // far larger than the read limit and check it is still reported.
+        let big = STREAM_SECTION_LIMIT as usize * 4;
+        let mut psar = b"NPUMDIMG".to_vec();
+        psar.resize(big, 0);
+        let pbp = crate::pbp::PbpBuilder::new()
+            .section(
+                PbpSection::ParamSfo,
+                crate::sfo::mg_param_sfo("Big").unwrap().to_bytes(),
+            )
+            .section(PbpSection::DataPsar, psar)
+            .build();
+        let bytes = pbp.to_bytes();
+
+        let report = inspect_pbp(std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        let container = report.container.unwrap();
+        let archive = container
+            .sections
+            .iter()
+            .find(|s| s.section == PbpSection::DataPsar)
+            .unwrap();
+        assert_eq!(archive.format, FileFormat::NpUmdImg);
+        assert_eq!(archive.size as usize, big);
+    }
+
+    #[test]
+    fn streaming_rejects_a_malformed_container() {
+        let data = mg_eboot();
+        // A truncated file: the offset table describes more than exists.
+        assert!(inspect_pbp(std::io::Cursor::new(&data), 64).is_err());
+        assert!(inspect_pbp(std::io::Cursor::new(b"nope".to_vec()), 4).is_err());
     }
 
     #[test]

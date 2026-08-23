@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use cli::{Cli, Command, derive_output_path};
-use pspbuild::inspect::{FileFormat, Inspection, IsoReport, inspect, inspect_iso};
+use pspbuild::inspect::{FileFormat, Inspection, IsoReport, inspect, inspect_iso, inspect_pbp};
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
 use pspbuild::pbp::{Pbp, PbpSection};
 use pspbuild::{Container, EncryptOptions, Error, decrypt_prx, encrypt_prx, verify_prx};
@@ -152,13 +152,18 @@ fn run(cli: &Cli) -> Result<(), Error> {
         }),
 
         Command::Inspect { input } => {
-            // An ISO can be 1.8 GB. Classify from a prefix and stream it rather
-            // than reading the whole file to find out what it is.
-            if detect_file(input)? == FileFormat::Iso9660 {
+            // A UMD runs to 1.8 GB and an EG EBOOT to over a gigabyte, so
+            // classify from a prefix and stream rather than reading the whole
+            // file just to find out what it is.
+            let format = detect_file(input)?;
+            if matches!(format, FileFormat::Iso9660 | FileFormat::Pbp) {
                 let file = std::fs::File::open(input).map_err(|e| Error::io(input, e))?;
                 let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-                let report = inspect_iso(file)?;
-                print_iso(&report, size);
+                if format == FileFormat::Iso9660 {
+                    print_iso(&inspect_iso(file)?, size);
+                } else {
+                    print_inspection(&inspect_pbp(file, size)?);
+                }
                 return Ok(());
             }
             let data = read(input)?;
