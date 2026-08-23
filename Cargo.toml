@@ -1,12 +1,12 @@
 [package]
-name = "prx-encrypter"
+name = "pspbuild"
 version = "0.1.0"
 edition = "2024"
-description = "Encrypt PSP PRX modules, sized from the payload rather than a fixed template"
+description = "PSP EBOOT toolkit: PRX encryption, PBP containers and MG EBOOT construction, sized from the payload rather than a fixed template"
 license = "MIT"
-repository = "https://github.com/itsnohax/rust-prxencrypt"
+repository = "https://github.com/ItsNoHax/pspbuild"
 readme = "README.md"
-keywords = ["psp", "prx", "kirk", "homebrew", "encryption"]
+keywords = ["psp", "prx", "kirk", "homebrew", "eboot"]
 categories = ["command-line-utilities", "encoding"]
 
 [dependencies]

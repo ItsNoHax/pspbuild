@@ -10,7 +10,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 fn cli() -> Command {
-    Command::cargo_bin("prx-encrypter").expect("binary builds")
+    Command::cargo_bin("pspbuild").expect("binary builds")
 }
 
 /// Write a test module into a temporary directory.

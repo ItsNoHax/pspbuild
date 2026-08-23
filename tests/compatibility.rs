@@ -12,8 +12,8 @@
 mod common;
 
 use common::PSP_HEADER_SIZE;
-use prx_encrypter::psp::header::PspModuleHeader;
-use prx_encrypter::{inspect_prx, psp::tag, verify_prx};
+use pspbuild::psp::header::PspModuleHeader;
+use pspbuild::{inspect_prx, psp::tag, verify_prx};
 
 /// Output of the reference PSPSDK `PrxEncrypter` for a 4 KiB input.
 const REFERENCE_OUTPUT: &[u8] = include_bytes!("fixtures/ref_tiny.prx");

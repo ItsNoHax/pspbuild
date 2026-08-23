@@ -511,7 +511,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "prx-encrypter"
+name = "pspbuild"
 version = "0.1.0"
 dependencies = [
  "aes",

@@ -4,8 +4,8 @@ mod common;
 
 use common::{PSP_HEADER_SIZE, make_prx};
 use proptest::prelude::*;
-use prx_encrypter::format::{align_to_block, try_align_up};
-use prx_encrypter::{
+use pspbuild::format::{align_to_block, try_align_up};
+use pspbuild::{
     EncryptOptions, decrypt_prx, encrypt_prx, inspect_prx, output_size_for, verify_prx,
 };
 

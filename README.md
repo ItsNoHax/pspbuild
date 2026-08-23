@@ -1,4 +1,4 @@
-# prx-encrypter
+# pspbuild
 
 Encrypt PSP PRX modules into PSP-compatible encrypted PRX files.
 
@@ -8,7 +8,7 @@ and — the reason it exists — **sizes its output from the actual payload inst
 of from a fixed-capacity template**.
 
 ```text
-700 KiB PRX  ->  prx-encrypter  ->  ~700 KiB encrypted PRX
+700 KiB PRX  ->  pspbuild  ->  ~700 KiB encrypted PRX
 700 KiB PRX  ->  legacy tool    ->   5.3 MiB encrypted PRX
 ```
 
@@ -27,7 +27,7 @@ Measured on a real module:
 | --- | ---: |
 | original module | 498,752 |
 | legacy `PrxEncrypter` | 5,583,952 |
-| `prx-encrypter` | 147,472 |
+| `pspbuild` | 147,472 |
 
 AES and CMAC do not expand data; AES-CBC rounds up to the next 16-byte block
 and that is all. The multi-megabyte growth was entirely the fixed templates.
@@ -56,17 +56,17 @@ environment is required.
 
 ```sh
 # Encrypt a module, or an EBOOT.PBP (its DATA.PSP section is replaced)
-prx-encrypter encrypt game.prx -o game.enc.prx
-prx-encrypter encrypt EBOOT.PBP -o signed/EBOOT.PBP
+pspbuild encrypt game.prx -o game.enc.prx
+pspbuild encrypt EBOOT.PBP -o signed/EBOOT.PBP
 
 # Show what a file is, encrypted or not
-prx-encrypter inspect game.enc.prx
+pspbuild inspect game.enc.prx
 
 # Check the header hash, both CMAC tags, and the decrypted payload
-prx-encrypter verify game.enc.prx
+pspbuild verify game.enc.prx
 
 # Recover the original module
-prx-encrypter decrypt game.enc.prx -o game.dec.prx
+pspbuild decrypt game.enc.prx -o game.dec.prx
 ```
 
 Options for `encrypt`:
@@ -82,7 +82,7 @@ Normal runs print nothing on stdout and exit non-zero on failure, so the tool
 drops straight into a build script. `--verbose` writes to stderr only.
 
 ```console
-$ prx-encrypter -v encrypt game.prx
+$ pspbuild -v encrypt game.prx
 Input size:       498752 bytes
 Compression:      enabled
 Payload size:     147126 bytes
@@ -95,7 +95,7 @@ Output size:      147472 bytes
 ```cmake
 add_custom_command(
     OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/game.enc.prx
-    COMMAND prx-encrypter encrypt $<TARGET_FILE:game> -o game.enc.prx
+    COMMAND pspbuild encrypt $<TARGET_FILE:game> -o game.enc.prx
     DEPENDS game
 )
 ```
@@ -105,7 +105,7 @@ add_custom_command(
 The CLI is a thin wrapper; the same functionality is available directly.
 
 ```rust
-use prx_encrypter::{EncryptOptions, encrypt_prx, verify_prx};
+use pspbuild::{EncryptOptions, encrypt_prx, verify_prx};
 
 let module = std::fs::read("game.prx")?;
 let encrypted = encrypt_prx(&module, &EncryptOptions::default())?;

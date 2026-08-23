@@ -3,10 +3,10 @@
 # Cross-validate this crate's output against an independent implementation.
 #
 # Builds PPSSPP's own PrxDecrypter (plus libkirk) into a small oracle binary,
-# encrypts a module with prx-encrypter, and checks that the oracle decrypts it
+# encrypts a module with pspbuild, and checks that the oracle decrypts it
 # back to the original bytes.
 #
-# This matters because prx-encrypter verifying its own output only proves
+# This matters because pspbuild verifying its own output only proves
 # self-consistency. The oracle is third-party code that the PSP emulator
 # actually uses to load modules.
 #
@@ -77,7 +77,7 @@ g++ -std=c++17 -I. -O2 -w -c Core/ELF/PrxDecrypter.cpp -o PrxDecrypter.o
 g++ -std=c++17 -I. -O2 -w -c oracle.cpp -o oracle.o
 g++ -o oracle ./*.o
 
-echo "==> Building prx-encrypter"
+echo "==> Building pspbuild"
 cd "$ROOT"
 cargo build --release --quiet
 
@@ -90,12 +90,12 @@ if [[ -z "$MODULE" ]]; then
 fi
 
 echo "==> Encrypting $MODULE"
-"$ROOT/target/release/prx-encrypter" encrypt "$MODULE" -o "$WORK/mine.prx"
+"$ROOT/target/release/pspbuild" encrypt "$MODULE" -o "$WORK/mine.prx"
 
 echo "==> Decrypting with the oracle"
 "$WORK/oracle" "$WORK/mine.prx" "$WORK/mine.payload"
 
-# The payload is gzip if prx-encrypter chose to compress.
+# The payload is gzip if pspbuild chose to compress.
 if [[ "$(head -c2 "$WORK/mine.payload" | xxd -p)" == "1f8b" ]]; then
     mv "$WORK/mine.payload" "$WORK/mine.payload.gz"
     gunzip -f "$WORK/mine.payload.gz"

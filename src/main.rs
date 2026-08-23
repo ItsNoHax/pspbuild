@@ -1,4 +1,4 @@
-//! `prx-encrypter` command-line entry point.
+//! `pspbuild` command-line entry point.
 
 mod cli;
 
@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use cli::{Cli, Command, derive_output_path};
-use prx_encrypter::{
+use pspbuild::{
     Container, EncryptOptions, Error, decrypt_prx, encrypt_prx, inspect_prx, verify_prx,
 };
 

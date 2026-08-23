@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// Encrypt PSP PRX modules into PSP-compatible encrypted PRX files.
 #[derive(Debug, Parser)]
-#[command(name = "prx-encrypter", version, about, long_about = None)]
+#[command(name = "pspbuild", version, about, long_about = None)]
 pub struct Cli {
     /// Print details of each stage to stderr.
     #[arg(short, long, global = true)]
@@ -67,11 +67,11 @@ pub enum FormatArg {
     Pspemu,
 }
 
-impl From<FormatArg> for prx_encrypter::Format {
+impl From<FormatArg> for pspbuild::Format {
     fn from(value: FormatArg) -> Self {
         match value {
-            FormatArg::Psp => prx_encrypter::Format::Psp,
-            FormatArg::Pspemu => prx_encrypter::Format::PspEmu,
+            FormatArg::Psp => pspbuild::Format::Psp,
+            FormatArg::Pspemu => pspbuild::Format::PspEmu,
         }
     }
 }
@@ -125,25 +125,21 @@ mod tests {
 
     #[test]
     fn parses_the_documented_invocations() {
-        let cli =
-            Cli::try_parse_from(["prx-encrypter", "encrypt", "in.prx", "-o", "out.prx"]).unwrap();
+        let cli = Cli::try_parse_from(["pspbuild", "encrypt", "in.prx", "-o", "out.prx"]).unwrap();
         assert!(matches!(cli.command, Command::Encrypt { .. }));
 
-        let cli = Cli::try_parse_from(["prx-encrypter", "-v", "encrypt", "game.prx"]).unwrap();
+        let cli = Cli::try_parse_from(["pspbuild", "-v", "encrypt", "game.prx"]).unwrap();
         assert!(cli.verbose);
 
-        assert!(Cli::try_parse_from(["prx-encrypter", "inspect", "a.prx"]).is_ok());
-        assert!(Cli::try_parse_from(["prx-encrypter", "verify", "a.prx"]).is_ok());
+        assert!(Cli::try_parse_from(["pspbuild", "inspect", "a.prx"]).is_ok());
+        assert!(Cli::try_parse_from(["pspbuild", "verify", "a.prx"]).is_ok());
+        assert!(Cli::try_parse_from(["pspbuild", "encrypt", "a.prx", "--no-compress"]).is_ok());
         assert!(
-            Cli::try_parse_from(["prx-encrypter", "encrypt", "a.prx", "--no-compress"]).is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["prx-encrypter", "encrypt", "a.prx", "--format", "pspemu"])
-                .is_ok()
+            Cli::try_parse_from(["pspbuild", "encrypt", "a.prx", "--format", "pspemu"]).is_ok()
         );
 
         // Missing operands must fail rather than default to something.
-        assert!(Cli::try_parse_from(["prx-encrypter", "encrypt"]).is_err());
-        assert!(Cli::try_parse_from(["prx-encrypter"]).is_err());
+        assert!(Cli::try_parse_from(["pspbuild", "encrypt"]).is_err());
+        assert!(Cli::try_parse_from(["pspbuild"]).is_err());
     }
 }

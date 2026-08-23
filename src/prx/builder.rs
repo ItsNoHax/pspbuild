@@ -105,6 +105,11 @@ pub struct BuildOutput {
 fn derive_keys(payload: &[u8], uncompressed_size: u32) -> ([u8; 16], [u8; 16], [u8; 16]) {
     let derive = |domain: &[u8]| -> [u8; 16] {
         let digest = sha1_chunks(&[
+            // Deliberately not renamed with the crate. This string only
+            // separates derivation domains, but it feeds every output byte, so
+            // changing it would silently invalidate reproducibility against
+            // every EBOOT built before the rename. Bump the version suffix if
+            // the derivation itself ever changes.
             b"prx-encrypter/v1",
             domain,
             &uncompressed_size.to_le_bytes(),

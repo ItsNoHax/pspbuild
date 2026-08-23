@@ -4,7 +4,7 @@
 //! the actual payload rather than from a fixed-capacity template.
 //!
 //! ```no_run
-//! use prx_encrypter::{EncryptOptions, encrypt_prx};
+//! use pspbuild::{EncryptOptions, encrypt_prx};
 //!
 //! let input = std::fs::read("game.prx")?;
 //! let encrypted = encrypt_prx(&input, &EncryptOptions::default())?;

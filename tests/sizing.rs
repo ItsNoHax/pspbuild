@@ -3,7 +3,7 @@
 mod common;
 
 use common::{PSP_HEADER_SIZE, make_prx, make_prx_with};
-use prx_encrypter::{EncryptOptions, decrypt_prx, encrypt_prx, output_size_for, verify_prx};
+use pspbuild::{EncryptOptions, decrypt_prx, encrypt_prx, output_size_for, verify_prx};
 
 fn no_compress() -> EncryptOptions {
     EncryptOptions {
