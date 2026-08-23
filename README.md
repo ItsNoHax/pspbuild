@@ -12,6 +12,8 @@ of from a fixed-capacity template**.
 700 KiB PRX  ->  legacy tool    ->   5.3 MiB encrypted PRX
 ```
 
+Output is confirmed booting on a retail PSP Slim running official firmware.
+
 ## The size problem
 
 The legacy encrypter ships three prebuilt header templates and picks the
@@ -53,8 +55,9 @@ environment is required.
 ## Usage
 
 ```sh
-# Encrypt (output defaults to game.enc.prx)
+# Encrypt a module, or an EBOOT.PBP (its DATA.PSP section is replaced)
 prx-encrypter encrypt game.prx -o game.enc.prx
+prx-encrypter encrypt EBOOT.PBP -o signed/EBOOT.PBP
 
 # Show what a file is, encrypted or not
 prx-encrypter inspect game.enc.prx
@@ -69,10 +72,14 @@ prx-encrypter decrypt game.enc.prx -o game.dec.prx
 Options for `encrypt`:
 
 ```text
--o, --output <FILE>   output path (default: <input>.enc.<ext>)
-    --no-compress     skip gzip compression of the payload
-    --format <FMT>    psp (default) or pspemu
--v, --verbose         report each stage on stderr
+-o, --output <FILE>      output path (default: <input>.enc.<ext>)
+    --no-compress        skip gzip compression of the payload
+    --format <FMT>       psp (default) or pspemu
+    --derived-metadata   derive the ambiguous header fields from the input
+                         instead of using the values retail firmware wants;
+                         produces a module that will not boot (investigation
+                         only)
+-v, --verbose            report each stage on stderr
 ```
 
 Normal runs print nothing on stdout and exit non-zero on failure, so the tool
@@ -115,6 +122,13 @@ verify_prx(&encrypted.data)?;
 format layers (`psp::header`, `psp::tag`, `kirk`, `crypto`) for tools that need
 them.
 
+## PBP containers
+
+PSP homebrew ships as `EBOOT.PBP`, which carries the module in its `DATA.PSP`
+section. Pass a PBP to any command and it is handled directly: `encrypt`
+rewrites that one section and rebuilds the container, leaving `PARAM.SFO`,
+icons and audio byte-identical. A real 783,124-byte EBOOT becomes 431,844.
+
 ## Format overview
 
 ```text
@@ -128,6 +142,9 @@ over the header plus two AES-CMAC tags — one over the header region, one over
 the header and the entire payload.
 
 ## Compatibility
+
+A compressed, dynamically sized EBOOT built by this tool boots on a retail PSP
+Slim running official firmware.
 
 Files produced by the PSPSDK reference tool are parsed, verified and decrypted
 correctly; this is covered by a test against a reference-produced fixture.
@@ -144,22 +161,24 @@ than randomly generated, so the same input always yields identical bytes.
 
 ## Known limitations
 
-- **Not verified on PSP hardware.** Correctness is established against the
-  format and against an independent software decrypter. If you test on a real
-  console, please report results.
+- **Three header fields are fixed rather than derived.** `mod_attribute`,
+  the module version and `devkit_version` are written as genuine Sony modules
+  carry them, because retail firmware rejects a module that derives them from
+  the input. See [docs/FORMAT.md](docs/FORMAT.md#8-fields-the-firmware-is-fussy-about).
+  Which of the three is load-bearing has not been isolated.
+- **Tested on one console.** A PSP Slim on official firmware. Other models and
+  firmware revisions are unverified.
 - **One tag.** Only `0xADF305F0` (the 2.80 demo scheme) is emitted. This is the
   scheme the legacy templates used, and the one whose header carries no
   signature.
 - **PSPemu/PBOOT is not implemented.** `--format pspemu` fails with a clear
   message rather than producing something untested.
-- **`devkit_version` is a fixed 3.71.** The input ELF has no equivalent field
-  and genuine modules vary widely, so it appears unconstrained.
 - **At most four segments**, which is what a `~PSP` header can describe.
 
 ## Development
 
 ```sh
-cargo test        # 127 tests: crypto vectors, format, property and CLI tests
+cargo test        # 137 tests: crypto vectors, format, property and CLI tests
 cargo clippy --all-targets
 ```
 

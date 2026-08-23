@@ -9,7 +9,9 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use cli::{Cli, Command, derive_output_path};
-use prx_encrypter::{EncryptOptions, Error, decrypt_prx, encrypt_prx, inspect_prx, verify_prx};
+use prx_encrypter::{
+    Container, EncryptOptions, Error, decrypt_prx, encrypt_prx, inspect_prx, verify_prx,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -34,11 +36,13 @@ fn run(cli: &Cli) -> Result<(), Error> {
             output,
             no_compress,
             format,
+            derived_metadata,
         } => {
             let data = read(input)?;
             let options = EncryptOptions {
                 compress: !no_compress,
                 format: (*format).into(),
+                compat_metadata: !derived_metadata,
             };
 
             let encrypted = encrypt_prx(&data, &options)?;
@@ -48,6 +52,9 @@ fn run(cli: &Cli) -> Result<(), Error> {
 
             if cli.verbose {
                 let mut err = std::io::stderr().lock();
+                if encrypted.container == Container::Pbp {
+                    let _ = writeln!(err, "Container:        PBP (encrypting DATA.PSP)");
+                }
                 let _ = writeln!(err, "Input size:       {} bytes", encrypted.input_size);
                 let _ = writeln!(
                     err,

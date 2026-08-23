@@ -50,14 +50,24 @@ pub const MAX_PAYLOAD: u64 = 64 * 1024 * 1024;
 
 /// Default devkit version written into the header.
 ///
-/// The input ELF carries no equivalent field. Genuine modules using this tag
-/// were observed with values ranging from 0 to 5.00, so the loader is not
-/// strict about it; 3.71 is a widely compatible choice.
-pub const DEFAULT_DEVKIT_VERSION: u32 = 0x0307_0110;
+/// Zero, which is what the legacy tool's largest template carries and what
+/// booted on retail OFW. Non-zero values (`0x03070110`, `0x06060010`) were
+/// both rejected on hardware, so do not "improve" this without testing.
+pub const DEFAULT_DEVKIT_VERSION: u32 = 0;
 
 /// The decryption mode the loader uses to select this scheme. Constant across
 /// every genuine module examined that uses this tag.
 pub const DECRYPT_MODE: u8 = 0x0D;
+
+/// `mod_attribute` used by every genuine Sony module examined with this tag.
+///
+/// The input module's own attribute is normally the right thing to copy, but
+/// all three legacy templates carry `0x0200` regardless of the game, which
+/// suggests the loader expects it on an encrypted module.
+pub const COMPAT_MOD_ATTRIBUTE: u16 = 0x0200;
+
+/// Module version carried by every genuine module examined with this tag.
+pub const COMPAT_MODULE_VERSION: (u8, u8) = (1, 1);
 
 /// Inputs to a build.
 pub struct BuildRequest<'a> {
@@ -71,6 +81,11 @@ pub struct BuildRequest<'a> {
     pub uncompressed_size: u32,
     /// Encryption tag to emit.
     pub tag: &'a TagInfo,
+    /// Use the metadata values observed in genuine Sony modules instead of the
+    /// ones derived from the input, for the few fields where the correct
+    /// choice is ambiguous. Retail OFW rejects the derived values, so this
+    /// defaults to on.
+    pub compat_metadata: bool,
 }
 
 /// A built encrypted PRX plus the numbers describing it.
@@ -112,11 +127,17 @@ fn build_metadata(request: &BuildRequest<'_>, payload_size: u32) -> Result<PspMo
         max: u32::MAX as u64,
     })?;
 
+    let (mod_attribute, version) = if request.compat_metadata {
+        (COMPAT_MOD_ATTRIBUTE, COMPAT_MODULE_VERSION)
+    } else {
+        (module.attributes, (module.version_lo, module.version_hi))
+    };
+
     let mut header = PspModuleHeader {
-        mod_attribute: module.attributes,
+        mod_attribute,
         comp_attribute: 0,
-        module_ver_lo: module.version_lo,
-        module_ver_hi: module.version_hi,
+        module_ver_lo: version.0,
+        module_ver_hi: version.1,
         modname: module.name.clone(),
         mod_version: 1,
         nsegments: module.segments.len() as u8,
@@ -131,6 +152,11 @@ fn build_metadata(request: &BuildRequest<'_>, payload_size: u32) -> Result<PspMo
     };
     header.set_compressed(request.compressed);
 
+    // `seg_size` is the segment's size *in the file*, not its memory size.
+    // The header tracks uninitialised memory separately in `bss_size`, so
+    // using p_memsz here would count the bss twice. Hardware confirmed this:
+    // a build using p_memsz (7.9 MB against a 498 KB module) failed to load,
+    // and crashed outright once compression was added on top.
     for (i, seg) in module.segments.iter().enumerate() {
         header.seg_align[i] = u16::try_from(seg.align).unwrap_or(0x10);
         header.seg_address[i] = seg.address;
@@ -222,6 +248,7 @@ mod tests {
             compressed: false,
             uncompressed_size: module.elf_size,
             tag: &TAG_DEMO_280,
+            compat_metadata: true,
         }
     }
 
@@ -308,6 +335,39 @@ mod tests {
         req.compressed = true;
         let out = build(&req).unwrap();
         assert!(PspModuleHeader::parse(&out.data).unwrap().is_compressed());
+    }
+
+    /// Regression: a build using `p_memsz` here failed on hardware. The
+    /// header carries `bss_size` separately, so segment sizes are file sizes
+    /// and memory sizes would double-count the bss.
+    #[test]
+    fn segment_sizes_are_file_sizes_with_bss_tracked_separately() {
+        let elf = synthetic_prx("segments", 4096);
+        let module = parse_module(&elf).unwrap();
+        assert!(module.segments[0].mem_size > module.segments[0].file_size);
+
+        let out = build(&request(&module, &[0u8; 900])).unwrap();
+        let meta = PspModuleHeader::parse(&out.data).unwrap();
+
+        assert_eq!(meta.seg_size[0], module.segments[0].file_size);
+        assert_ne!(meta.seg_size[0], module.segments[0].mem_size);
+        assert_eq!(meta.bss_size, module.bss_size());
+        // Together they account for the segment's memory footprint exactly once.
+        assert_eq!(
+            u64::from(meta.seg_size[0]) + u64::from(meta.bss_size),
+            u64::from(module.segments[0].mem_size)
+        );
+    }
+
+    /// Hardware rejected `0x03070110` (invented) and `0x06060010`; the value
+    /// that booted was zero, which is also what a genuine template carries.
+    #[test]
+    fn devkit_version_matches_what_booted_on_hardware() {
+        let elf = synthetic_prx("devkit", 512);
+        let module = parse_module(&elf).unwrap();
+        let out = build(&request(&module, &[0u8; 256])).unwrap();
+        let meta = PspModuleHeader::parse(&out.data).unwrap();
+        assert_eq!(meta.devkit_version, 0);
     }
 
     #[test]

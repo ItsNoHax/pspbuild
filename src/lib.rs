@@ -24,6 +24,7 @@ pub mod crypto;
 pub mod error;
 pub mod format;
 pub mod kirk;
+pub mod pbp;
 pub mod prx;
 pub mod psp;
 
@@ -32,6 +33,7 @@ pub use error::{Error, Result};
 use crate::format::align_to_block;
 use crate::kirk::commands::cmd1_decrypt;
 use crate::kirk::header::{HEADER_SIZE as KIRK_HEADER_SIZE, KirkCmd1Header};
+use crate::pbp::Pbp;
 use crate::prx::builder::{self, BuildRequest, DATA_OFFSET};
 use crate::prx::parser::{ModuleInfo, parse_module};
 use crate::psp::header::{METADATA_SIZE, PSP_HEADER_SIZE, PspModuleHeader};
@@ -54,6 +56,12 @@ pub struct EncryptOptions {
     pub compress: bool,
     /// Output format.
     pub format: Format,
+    /// Use the metadata values observed in genuine Sony modules for the few
+    /// header fields where the correct choice is ambiguous.
+    ///
+    /// Defaults to on: retail OFW rejects a module whose `mod_attribute` and
+    /// module version are derived from the input instead.
+    pub compat_metadata: bool,
 }
 
 impl Default for EncryptOptions {
@@ -63,8 +71,19 @@ impl Default for EncryptOptions {
             // template, and compression only shrinks the result.
             compress: true,
             format: Format::Psp,
+            compat_metadata: true,
         }
     }
+}
+
+/// What kind of file the encrypter produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Container {
+    /// A bare encrypted PRX.
+    #[default]
+    Prx,
+    /// A PBP container whose DATA.PSP section was encrypted.
+    Pbp,
 }
 
 /// The result of an encryption.
@@ -80,6 +99,8 @@ pub struct Encrypted {
     pub aligned_payload_size: u32,
     /// Whether the payload was compressed.
     pub compressed: bool,
+    /// The container that was written.
+    pub container: Container,
 }
 
 /// Encrypt a PSP module.
@@ -88,6 +109,25 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
         return Err(Error::UnsupportedPspEmu(
             "the PSPemu/PBOOT format is not implemented yet".into(),
         ));
+    }
+
+    // An EBOOT.PBP carries the module in its DATA.PSP section. Encrypt that
+    // section and hand back a rebuilt container, so homebrew can be encrypted
+    // in the form it actually ships in.
+    if Pbp::is_pbp(input) {
+        let mut container = Pbp::parse(input)?;
+        if container.data_psp().is_empty() {
+            return Err(Error::InvalidPrxHeader(
+                "PBP has an empty DATA.PSP section; nothing to encrypt".into(),
+            ));
+        }
+        let encrypted = encrypt_prx(container.data_psp(), options)?;
+        container.set_data_psp(encrypted.data);
+        return Ok(Encrypted {
+            data: container.to_bytes(),
+            container: Container::Pbp,
+            ..encrypted
+        });
     }
 
     let module = parse_module(input)?;
@@ -112,6 +152,7 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
         compressed,
         uncompressed_size: module.elf_size,
         tag: &TAG_DEMO_280,
+        compat_metadata: options.compat_metadata,
     })?;
 
     Ok(Encrypted {
@@ -120,7 +161,21 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
         payload_size: built.payload_size,
         aligned_payload_size: built.aligned_payload_size,
         compressed,
+        container: Container::Prx,
     })
+}
+
+/// Look through a PBP container to the module it carries.
+///
+/// Inspection, verification and decryption all accept either a bare PRX or an
+/// EBOOT.PBP, since that is how homebrew ships.
+fn module_bytes(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+    if Pbp::is_pbp(data) {
+        let container = Pbp::parse(data)?;
+        Ok(std::borrow::Cow::Owned(container.data_psp().to_vec()))
+    } else {
+        Ok(std::borrow::Cow::Borrowed(data))
+    }
 }
 
 /// A description of an encrypted or plain PRX.
@@ -144,6 +199,7 @@ pub struct PrxInfo {
 
 /// Inspect a PRX, encrypted or not.
 pub fn inspect_prx(data: &[u8]) -> Result<PrxInfo> {
+    let data = &*module_bytes(data)?;
     // An encrypted PRX starts with the ~PSP magic.
     if data.len() >= METADATA_SIZE && data[..4] == psp::header::PSP_MAGIC {
         let meta = PspModuleHeader::parse(data)?;
@@ -214,6 +270,10 @@ pub struct Verification {
 /// result as a PSP module.
 pub fn verify_prx(data: &[u8]) -> Result<Verification> {
     let mut checks = Vec::new();
+    if Pbp::is_pbp(data) {
+        checks.push("PBP container structure".into());
+    }
+    let data = &*module_bytes(data)?;
 
     if data.len() < PSP_HEADER_SIZE {
         return Err(Error::TooShort {
@@ -293,6 +353,7 @@ pub fn verify_prx(data: &[u8]) -> Result<Verification> {
 
 /// Decrypt an encrypted PRX back to the original module.
 pub fn decrypt_prx(data: &[u8]) -> Result<Vec<u8>> {
+    let data = &*module_bytes(data)?;
     if data.len() < PSP_HEADER_SIZE {
         return Err(Error::TooShort {
             expected: PSP_HEADER_SIZE,
@@ -463,6 +524,54 @@ mod tests {
             encrypt_prx(&elf, &options).unwrap_err(),
             Error::UnsupportedPspEmu(_)
         ));
+    }
+
+    #[test]
+    fn pbp_containers_are_encrypted_in_place() {
+        use crate::pbp::Pbp;
+
+        let module = synthetic_prx("pbp_module", 20_000);
+        let mut pbp = Pbp {
+            version: 0x0001_0000,
+            sections: [
+                b"PARAM.SFO contents".to_vec(),
+                b"icon bytes".to_vec(),
+                Vec::new(),
+                Vec::new(),
+                b"pic1 bytes".to_vec(),
+                Vec::new(),
+                module.clone(),
+                Vec::new(),
+            ],
+        };
+        let original = pbp.to_bytes();
+
+        let enc = encrypt_prx(&original, &EncryptOptions::default()).unwrap();
+        assert_eq!(enc.container, Container::Pbp);
+
+        // Still a PBP, and smaller than it was.
+        let rebuilt = Pbp::parse(&enc.data).unwrap();
+        assert!(enc.data.len() < original.len());
+
+        // Every other section survives byte for byte.
+        for i in [0usize, 1, 2, 3, 4, 5, 7] {
+            assert_eq!(rebuilt.sections[i], pbp.sections[i], "section {i} changed");
+        }
+        assert_eq!(rebuilt.version, pbp.version);
+
+        // The executable is now an encrypted PRX that round-trips.
+        assert_eq!(&rebuilt.data_psp()[..4], b"~PSP");
+        assert_eq!(decrypt_prx(&enc.data).unwrap(), module);
+
+        // And the whole EBOOT verifies and inspects through the container.
+        let v = verify_prx(&enc.data).unwrap();
+        assert!(v.checks.iter().any(|c| c.contains("PBP")));
+        let info = inspect_prx(&enc.data).unwrap();
+        assert!(info.encrypted);
+        assert_eq!(info.module_name, "pbp_module");
+
+        pbp.set_data_psp(Vec::new());
+        assert!(encrypt_prx(&pbp.to_bytes(), &EncryptOptions::default()).is_err());
     }
 
     #[test]

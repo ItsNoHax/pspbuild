@@ -33,9 +33,9 @@ There is nothing else — no trailer, no padding beyond the AES block alignment.
 offset  len    field                 static?    notes
 ------  -----  --------------------  ---------  --------------------------------
 0x000   0x004  "~PSP" magic          static     format identifier
-0x004   0x002  mod_attribute         derived    from the input module info
+0x004   0x002  mod_attribute         static     0x0200 (see 7a)
 0x006   0x002  comp_attribute        derived    bit 0 = payload is gzipped
-0x008   0x002  module version        derived    from the input module info
+0x008   0x002  module version        static     1.1 (see 7a)
 0x00A   0x01C  module name           derived    from the input module info
 0x026   0x001  mod_version           static     1
 0x027   0x001  nsegments             derived    count of PT_LOAD segments
@@ -46,9 +46,9 @@ offset  len    field                 static?    notes
 0x038   0x004  bss_size              derived    sum of p_memsz - p_filesz
 0x03C   0x008  seg_align[4]          derived    per segment
 0x044   0x010  seg_address[4]        derived    per segment p_vaddr
-0x054   0x010  seg_size[4]           derived    per segment p_filesz
+0x054   0x010  seg_size[4]           derived    per segment p_filesz (not p_memsz)
 0x064   0x014  reserved[5]           static     zero
-0x078   0x004  devkit_version        free       see note below
+0x078   0x004  devkit_version        static     0 (see 7a)
 0x07C   0x001  decrypt_mode          static     0x0D for this scheme
 0x07D   0x001  padding               static     zero
 0x07E   0x002  overlap_size          static     zero
@@ -65,12 +65,6 @@ offset  len    field                 static?    notes
 **The 0x00..0x80 region does double duty.** KIRK stores a verbatim copy of it
 as the container's "predata", so it is covered by the data CMAC. Changing the
 module name changes the CMAC.
-
-### `devkit_version`
-
-The input ELF carries no equivalent. The three legacy templates use 0x00000000,
-0x03070010 and 0x05000010 with the *same* tag, so the loader does not constrain
-it. This crate writes 0x03070110.
 
 ## 3. The KIRK CMD1 container
 
@@ -162,10 +156,46 @@ Only these, and each for a stated reason:
 | `decrypt_mode` = 0x0D | selects this decryption path in the loader |
 | `data_offset` = 0x80 | the predata is the metadata region, whose size is fixed |
 | signature region = zeros | required by this scheme |
+| `mod_attribute` = 0x0200 | see below — retail firmware rejects other values |
+| module version = 1.1 | as above |
+| `devkit_version` = 0 | as above |
 
 Everything else is computed.
 
-## 8. Validation
+## 8. Fields the firmware is fussy about
+
+Three header fields look like they should be derived from the input module.
+They are not: retail OFW rejects a module that derives them. This was
+established on hardware, one variable at a time.
+
+| field | derived value | value that boots |
+| --- | --- | --- |
+| `mod_attribute` (0x04) | from the module info (0x0000) | **0x0200** |
+| `module_ver_hi` (0x09) | from the module info (0) | **1** |
+| `devkit_version` (0x78) | — (no equivalent in an ELF) | **0** |
+
+All three legacy templates carry exactly these values regardless of which game
+they came from, which is the tell. `--derived-metadata` restores the derived
+values for anyone wanting to investigate further; it produces a module that
+does not boot.
+
+Two fields nearby are easy to get wrong in the other direction:
+
+- **`seg_size` is the segment's size in the file (`p_filesz`), not its memory
+  size (`p_memsz`).** The header tracks uninitialised memory separately in
+  `bss_size`, so `p_memsz` counts the bss twice. A build using `p_memsz`
+  asked the firmware to allocate 7.9 MB for a 498 KB module; it failed to
+  load, and crashed the console outright once compression was added.
+  The invariant to hold onto is `seg_size[i] + bss_size == p_memsz`.
+- **`elf_size` is the *decompressed* size**, and `psp_size` is the size of the
+  whole encrypted file. Neither is the compressed payload size, which lives in
+  `comp_size` at 0xB0.
+
+Failures in this area are hard to read, because the firmware reports almost all
+of them as `80020148 UNSUPPORTED_PRX_TYPE` — nominally "the buffer wasn't an
+ELF after decryption", which points nowhere near a header field.
+
+## 9. Validation
 
 The claims above are tested rather than asserted:
 
@@ -176,3 +206,7 @@ The claims above are tested rather than asserted:
 - `scripts/cross-validate.sh` builds PPSSPP's own `PrxDecrypter` and runs it
   against this crate's output, confirming an independent implementation accepts
   the files and recovers the original module byte for byte.
+- **Hardware:** a compressed, dynamically sized EBOOT built by this crate boots
+  on a retail PSP Slim running official firmware. That is the claim the two
+  software checks above cannot make on their own — they both accepted the
+  builds that the console rejected.
