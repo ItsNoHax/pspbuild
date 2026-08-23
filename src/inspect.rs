@@ -330,16 +330,19 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
         Err(e) => report.param_sfo_error = Some(e.to_string()),
     }
 
-    // The executable is only readable on the MG path. An EG DATA.PSP is an
-    // NPDRM container, which this crate cannot open yet, so report that rather
-    // than letting a PRX parser fail confusingly against it.
+    // The executable is only fully readable on the MG path. A Store download's
+    // DATA.PSP is NPDRM-protected, which this crate cannot open yet, so say so
+    // rather than letting a PRX parser fail confusingly against it.
     let data_psp = pbp.data_psp();
     let (module, module_error) = if data_psp.is_empty() {
         (None, Some("DATA.PSP is empty".to_string()))
-    } else if report.category.as_ref() == Some(&Category::Eg) {
+    } else if report.category.as_ref().is_some_and(Category::is_npdrm) {
+        let category = report.category.as_ref().expect("checked above");
         (
             None,
-            Some("EG DATA.PSP is an NPDRM container; not supported yet".to_string()),
+            Some(format!(
+                "{category} is an NPDRM Store download; not supported yet"
+            )),
         )
     } else {
         match inspect_prx(data_psp) {

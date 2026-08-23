@@ -41,27 +41,56 @@ because it looks finished.
 
 ### 1.1 What an EG EBOOT is, and what it is not
 
-This is easy to get wrong, so it is worth stating precisely. An EG container
-has **all** of:
+This is easy to get wrong — four separate files have been mistaken for one
+during this work — so it is worth stating precisely. An EG container has
+**all** of:
 
 - `PARAM.SFO` with `CATEGORY=EG`
 - a non-empty `DATA.PSAR` beginning with the ASCII magic `NPUMDIMG`
 - a `DATA.PSP` that is an NPDRM container rather than a `~PSP` PRX
 
-Things that look like candidates but are not:
+`CATEGORY` is what separates the cases, and there are four in circulation.
+All of the following were observed directly:
+
+| CATEGORY | what it is | `DATA.PSP` | `DATA.PSAR` | NPDRM |
+| --- | --- | --- | --- | --- |
+| `MG` | homebrew, **and every demo** | encrypted PRX | empty | no |
+| `UG` | a retail UMD's own `PARAM.SFO` | — (not a PBP) | — | no |
+| `EG` | **PSP game bought from the Store** | NPDRM | `NPUMDIMG` | yes |
+| `ME` | PSOne classic from the Store | NPDRM | `PSISOIMG0000` | yes |
+
+So the near-misses, and why each one is not EG:
 
 | file | what it actually is |
 | --- | --- |
-| a downloadable **demo** (e.g. `APE ACADEMY 2`) | `CATEGORY=MG`, empty `DATA.PSAR`, ordinary encrypted PRX |
-| a **firmware update** PBP (e.g. `661.PBP`) | `CATEGORY=MG`; its `DATA.PSAR` is an update archive, not `NPUMDIMG` |
-| a **UMD ISO** | `CATEGORY=UG` in its own `PARAM.SFO`; not a PBP at all |
+| a downloadable **demo** (`APE ACADEMY 2`, `MotoGP`) | `MG`. Demos shipped as ordinary memory-stick games, never as NPDRM |
+| a **firmware update** PBP (`661.PBP`) | `MG`; its `DATA.PSAR` is an update archive, not `NPUMDIMG` |
+| a **UMD ISO** | `UG`, and not a PBP at all |
+| a **PSOne classic** (`Crash Bandicoot`) | `ME`. Genuinely NPDRM, `KEYS.BIN` and all — but a PS1 disc image, not a UMD image |
 
-Only a title actually purchased and downloaded from the PSN Store — a PSP
-"mini", a PSOne classic, or a full PSP game bought digitally — takes the EG
-path. Demos were distributed as plain MG.
+The `ME` case is the closest miss and the most instructive: it is a real Store
+download with a real 16-byte `KEYS.BIN` version key, so it satisfies "NPDRM
+content from PSN" while still being the wrong archive format. **Only a PSP game
+takes the EG path.**
 
-`pspbuild inspect` answers the question directly: check that `Category` reads
-`EG` and that the `DATA.PSAR` row is identified as `NPUMDIMG`.
+`pspbuild inspect` answers it in two lines — `Category` must read `EG` and the
+`DATA.PSAR` row must be identified as `NPUMDIMG`.
+
+### 1.2 Generating one instead of finding one
+
+`sign_np` produces EG EBOOTs from a PSP ISO, and a UMD image is already
+available here. That is the route the project plan assumes anyway: §7 and §29
+specify differential testing as reference-tool output against candidate output
+on the same input.
+
+For deriving a *format* it is arguably better than a single retail file,
+because inputs can be varied and the resulting byte movement observed — which
+is how per-title values are told apart from constants. One sample can never
+show that.
+
+The caveat is worth keeping in view: `sign_np` is a reimplementation, not
+Sony's tooling, so agreeing with it proves compatibility with `sign_np` rather
+than with Sony. Acceptance by the PSP's own loader still needs a boot test.
 
 ## 2. Shape of the pipeline
 

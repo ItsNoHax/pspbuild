@@ -91,10 +91,15 @@ whatever built the sections, not from the container.
 
 What `DATA.PSP` and `DATA.PSAR` actually hold depends on `CATEGORY`:
 
-| CATEGORY | DATA.PSP | DATA.PSAR |
-| --- | --- | --- |
-| `MG` | encrypted `~PSP` PRX, see [FORMAT.md](FORMAT.md) | empty |
-| `EG` | NPDRM container | `NPUMDIMG`, the encrypted ISO |
+| CATEGORY | what it is | DATA.PSP | DATA.PSAR |
+| --- | --- | --- | --- |
+| `MG` | homebrew and demos | encrypted `~PSP` PRX, see [FORMAT.md](FORMAT.md) | empty |
+| `EG` | PSP game from the Store | NPDRM container | `NPUMDIMG` |
+| `ME` | PSOne classic from the Store | NPDRM container | `PSISOIMG0000` |
+
+`UG` also exists but never appears in a PBP — it is what a retail UMD's own
+`PARAM.SFO` declares, inside the ISO. See [EG.md §1.1](EG.md) for the full
+comparison, which is the thing to read before assuming a given file is EG.
 
 ## 4. `PARAM.SFO`
 

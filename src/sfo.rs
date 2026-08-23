@@ -61,13 +61,20 @@ pub mod format_code {
 /// crossing from one pipeline to the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Category {
-    /// `MG` — a memory-stick game, i.e. homebrew and demos. The executable is
-    /// an encrypted PRX in `DATA.PSP`.
+    /// `MG` — a memory-stick game: homebrew, and every demo observed. The
+    /// executable is an encrypted PRX in `DATA.PSP` and `DATA.PSAR` is empty.
     Mg,
-    /// `EG` — an emulated/downloaded game. The executable is an NPDRM
-    /// container and the game data lives in `DATA.PSAR`.
+    /// `UG` — a UMD game. What a retail disc's own `PARAM.SFO` declares; not a
+    /// PBP container at all.
+    Ug,
+    /// `EG` — a PSP game downloaded from the Store. `DATA.PSP` is an NPDRM
+    /// container and `DATA.PSAR` holds an `NPUMDIMG` encrypted UMD image.
     Eg,
-    /// Any other category, preserved verbatim (`UG`, `MS`, `PG`, ...).
+    /// `ME` — a PSOne classic downloaded from the Store. NPDRM like `EG`, but
+    /// `DATA.PSAR` holds a `PSISOIMG` PlayStation disc image rather than a
+    /// `NPUMDIMG`, and it runs under the PS1 emulator.
+    Me,
+    /// Any other category, preserved verbatim (`MS`, `PG`, ...).
     Other(String),
 }
 
@@ -76,9 +83,21 @@ impl Category {
     pub fn as_str(&self) -> &str {
         match self {
             Category::Mg => "MG",
+            Category::Ug => "UG",
             Category::Eg => "EG",
+            Category::Me => "ME",
             Category::Other(s) => s,
         }
+    }
+
+    /// Whether this category's content is protected by NPDRM.
+    ///
+    /// `EG` and `ME` are both Store downloads and both carry a `KEYS.BIN`
+    /// version key alongside the EBOOT. Neither is supported yet, but they are
+    /// a different problem from `MG`, and saying so is more useful than
+    /// reporting them as unrecognised.
+    pub fn is_npdrm(&self) -> bool {
+        matches!(self, Category::Eg | Category::Me)
     }
 }
 
@@ -92,7 +111,9 @@ impl From<&str> for Category {
     fn from(value: &str) -> Self {
         match value {
             "MG" => Category::Mg,
+            "UG" => Category::Ug,
             "EG" => Category::Eg,
+            "ME" => Category::Me,
             other => Category::Other(other.to_owned()),
         }
     }
@@ -472,11 +493,33 @@ mod tests {
 
     #[test]
     fn category_maps_known_values_and_preserves_others() {
-        assert_eq!(Category::from("MG"), Category::Mg);
-        assert_eq!(Category::from("EG"), Category::Eg);
-        assert_eq!(Category::from("UG"), Category::Other("UG".into()));
-        assert_eq!(Category::Other("UG".into()).as_str(), "UG");
-        assert_eq!(Category::Mg.to_string(), "MG");
+        // All four have been seen in the wild: MG on homebrew and demos, UG on
+        // a retail UMD, ME on PSOne classics from the Store. EG is the one
+        // still lacking a sample.
+        for (text, expected) in [
+            ("MG", Category::Mg),
+            ("UG", Category::Ug),
+            ("EG", Category::Eg),
+            ("ME", Category::Me),
+        ] {
+            assert_eq!(Category::from(text), expected);
+            assert_eq!(expected.as_str(), text);
+            assert_eq!(expected.to_string(), text);
+        }
+
+        assert_eq!(Category::from("PG"), Category::Other("PG".into()));
+        assert_eq!(Category::Other("PG".into()).as_str(), "PG");
+    }
+
+    #[test]
+    fn store_downloads_are_flagged_as_npdrm() {
+        // EG and ME both come from the Store and both ship a KEYS.BIN version
+        // key. MG and UG do not.
+        assert!(Category::Eg.is_npdrm());
+        assert!(Category::Me.is_npdrm());
+        assert!(!Category::Mg.is_npdrm());
+        assert!(!Category::Ug.is_npdrm());
+        assert!(!Category::Other("PG".into()).is_npdrm());
     }
 
     #[test]

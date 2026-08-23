@@ -5,7 +5,7 @@ deliberately distinct. Read this section before the tables.
 
 | concept | what it is | example | represented by |
 | --- | --- | --- | --- |
-| **CATEGORY** | a routing decision — which security path the firmware runs | `MG`, `EG` | [`sfo::Category`](../src/sfo.rs) |
+| **CATEGORY** | a routing decision — which security path the firmware runs | `MG`, `UG`, `EG`, `ME` | [`sfo::Category`](../src/sfo.rs) |
 | **TAG** | a cryptographic format identifier stored in the file | `0xADF305F0` | [`psp::tag::TagInfo`](../src/psp/tag.rs) |
 | **KEY** | actual cryptographic material | `KIRK1_KEY` | [`kirk::keys`](../src/kirk/keys.rs) |
 | **FORMAT** | what a blob structurally is | PRX, NPUMDIMG, PGD | [`inspect::FileFormat`](../src/inspect.rs) |
@@ -50,9 +50,17 @@ Two entries deserve emphasis:
 | tag | scheme | seed slot | KIRK 4/7 key | signature region | supported |
 | --- | --- | --- | --- | --- | --- |
 | `0xADF305F0` | 2.80 demo | `0x60` | slot `0x60` | must be zero | **yes** |
+| `0xC0CB167C` | retail UMD `EBOOT.BIN` | — | — | — | no |
+| `0x0DAA06F0` | `ME` PSOne classic launcher | — | — | — | no |
 | `0xD91624F0` | — | — | — | differs | no |
 | `0x457B1EF0` | — | — | — | differs | no |
 | others | — | — | — | — | no |
+
+The two middle rows were observed directly rather than taken from a list:
+`0xC0CB167C` on a retail UMD's `EBOOT.BIN`, and `0x0DAA06F0` on the launcher
+stub inside three PSOne classics. Both are recorded because knowing a tag
+exists is useful even without the key material for it — `pspbuild` reads their
+headers and reports their metadata, then refuses to decrypt.
 
 Only `0xADF305F0` is emitted. It is the scheme the PSPSDK templates used and
 the one whose header carries no signature. Other tags take different KIRK paths
