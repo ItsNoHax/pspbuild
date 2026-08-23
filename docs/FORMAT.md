@@ -200,6 +200,51 @@ Failures in this area are hard to read, because the firmware reports almost all
 of them as `80020148 UNSUPPORTED_PRX_TYPE` — nominally "the buffer wasn't an
 ELF after decryption", which points nowhere near a header field.
 
+## 8a. `seg_size` beyond the first segment — unresolved
+
+`seg_size[0]` must be the segment's `p_filesz`. Established on hardware: a
+build using `p_memsz` claimed 7.9 MB for a 498 KB module, failed to load, and
+crashed outright once compression was added on top.
+
+That test used a **single-segment** module, so it says nothing about later
+segments — and a genuine Sony module disagrees with this crate about them.
+
+Comparing the `APE ACADEMY 2` demo (Sony's own build, same tag `0xADF305F0`)
+against what `pspbuild` generates for the identical module:
+
+| field | Sony | `pspbuild` | note |
+| --- | ---: | ---: | --- |
+| `seg_size[0]` | 7,255,412 | 7,255,412 | segment 0 has `p_filesz == p_memsz` |
+| `seg_size[1]` | 166,332 | 19,744 | Sony writes `p_memsz`, we write `p_filesz` |
+
+Every other ELF-derived field matches exactly, sizing included — 21 of 23.
+
+Sony's segment 0 has `p_filesz == p_memsz`, so it cannot distinguish the two
+rules. The only evidence about segment 0 is the hardware test, which says
+`p_filesz`; the only evidence about segment 1 is Sony's choice, which says
+`p_memsz`. **Both can be true** — the rule may differ by segment index, or
+`seg_size` may mean something subtler than its name suggests.
+
+This is not resolved, and the code has deliberately **not** been changed to
+match Sony. A plausible-looking claim about `seg_size` has already broken a
+working build once in this project's history; the way to settle it is a boot
+test of a multi-segment module, not an argument from symmetry.
+
+`tests/genuine.rs` pins both values so that changing either is a visible
+decision rather than silent drift.
+
+### `bss_size`
+
+The same comparison shows a second divergence. This crate writes the summed
+`p_memsz - p_filesz` over `PT_LOAD` (146,588). Sony writes `0xFFFA3130`, which
+read as signed is −380,624 — exactly the negation of the `PT_PRXRELOC`
+segment's `p_filesz`.
+
+That is not a bss size by any reading, which suggests either that the field's
+conventional name is wrong or that Sony's tooling stores an unrelated delta
+there. Whatever it is, the firmware evidently does not validate it, since the
+demo ships with that value and runs.
+
 ## 9. Validation
 
 The claims above are tested rather than asserted:

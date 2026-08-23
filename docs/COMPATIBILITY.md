@@ -6,7 +6,7 @@ What has actually been tested, and what has not.
 
 | target | result |
 | --- | --- |
-| PSP Slim, official firmware | MG EBOOT boots — **but see §4.2** |
+| PSP Slim, official firmware | MG EBOOT boots, on `pspbuild/v1` |
 | other PSP models | untested |
 | other firmware revisions | untested |
 
@@ -14,9 +14,10 @@ A compressed, dynamically sized MG EBOOT built by this tool boots on a retail
 PSP Slim running official firmware. That is one console. Nothing here should be
 read as a claim about the whole PSP line.
 
-That result was obtained before the key-derivation domain was bumped, so it
-applies to the format and the header fields rather than to the exact bytes the
-tool emits today. Section 4.2 explains what does and does not carry over.
+Confirmed twice, on either side of the key-derivation domain bump described in
+§4.1. The second run used `build-mg` end to end — module encryption, `--base`
+section reuse and a regenerated `PARAM.SFO` — rather than only `encrypt-prx`,
+so the MG pipeline is validated as a whole rather than just its encryption step.
 
 Two header fields were isolated on that hardware by varying one at a time
 against an otherwise byte-identical build:
@@ -49,8 +50,26 @@ check, not a passing grade.
 | --- | --- | --- |
 | PSPSDK `PrxEncrypter` | its output → `pspbuild` | parsed, verified and decrypted correctly |
 | PSPSDK `PrxEncrypter` | `pspbuild` output → it | not applicable; it has no decrypt mode |
+| **Sony's own tooling** | its output → `pspbuild` | **fully verified and decrypted** |
 | `ebootsigner` | either | not differential-tested |
 | `sign_np` | either | not applicable; EG is unimplemented |
+
+### 3.1 Against Sony
+
+The `APE ACADEMY 2` demo is a retail Sony build encrypted under `0xADF305F0` —
+the same tag this tool emits — which makes it the best fixture available.
+`pspbuild` verifies it completely: header SHA-1, both CMAC tags, and a full
+decrypt to a valid PSP module. Sony computed those tags and this crate
+re-derived them, so passing means the KIRK container and field layout agree
+with the real format rather than merely with themselves.
+
+Re-encrypting that module reproduces Sony's `psp_size` exactly and matches 21
+of 23 header fields. The two that differ are documented as open questions in
+[FORMAT.md §8a](FORMAT.md) and pinned by `tests/genuine.rs`.
+
+A useful negative result: a downloadable **demo** is still `CATEGORY=MG` with
+an empty `DATA.PSAR`. It is not an NPDRM container and carries no `NPUMDIMG`,
+so it is no help to the EG work. See [EG.md](EG.md).
 
 A fixture produced by the reference tool is checked into `tests/fixtures/` and
 covered by `tests/compatibility.rs`, so foreign-file handling is a real test
@@ -85,14 +104,15 @@ build.
 
 ### 4.2 What this cost
 
-Hardware validation does not carry across a domain bump. The boot test that
-confirmed the old build says nothing about the new one, and the current build
-is **pending re-validation on hardware**.
+Hardware validation does not carry across a domain bump: the boot test that
+confirmed the old build said nothing about the new one. A fresh EBOOT was built
+on `pspbuild/v1` and **booted on the retail Slim**, so the current output is
+validated on its own terms rather than inheriting an older result.
 
-The risk is low but not zero: none of the header fields the firmware is fussy
-about changed, and the independent checks all pass. But those checks passed for
-builds the console rejected before — see section 1 — so only a boot test
-settles it.
+Worth keeping in mind for the next bump. The independent checks — PPSSPP,
+`verify`, round-tripping — all passed for the *old* build too, and they also
+passed for builds the console rejected during header development. They are
+necessary and not sufficient; only a boot test settles it.
 
 ## 5. Known limitations
 

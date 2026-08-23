@@ -18,7 +18,8 @@ currently on hand:
 
 | needed | status |
 | --- | --- |
-| known-good EG `EBOOT.PBP` fixtures | **still not available** — none in the repo or on disk |
+| known-good EG `EBOOT.PBP` fixtures | **still not available** — see §1.1 |
+| NPUMDIMG signing keys | locatable in `sign_np.h`, not yet vendored |
 | `sign_np` source | not vendored |
 | `ebootsigner` source | not vendored |
 | PSPSDK `PrxEncrypter` source | available, but MG-only |
@@ -37,6 +38,30 @@ section 3.** Writing an `NpUmdImgHeader` with named fields would produce
 something that compiles, passes its own tests, and has never been checked
 against a file the PSP accepts. That is worse than an unimplemented command,
 because it looks finished.
+
+### 1.1 What an EG EBOOT is, and what it is not
+
+This is easy to get wrong, so it is worth stating precisely. An EG container
+has **all** of:
+
+- `PARAM.SFO` with `CATEGORY=EG`
+- a non-empty `DATA.PSAR` beginning with the ASCII magic `NPUMDIMG`
+- a `DATA.PSP` that is an NPDRM container rather than a `~PSP` PRX
+
+Things that look like candidates but are not:
+
+| file | what it actually is |
+| --- | --- |
+| a downloadable **demo** (e.g. `APE ACADEMY 2`) | `CATEGORY=MG`, empty `DATA.PSAR`, ordinary encrypted PRX |
+| a **firmware update** PBP (e.g. `661.PBP`) | `CATEGORY=MG`; its `DATA.PSAR` is an update archive, not `NPUMDIMG` |
+| a **UMD ISO** | `CATEGORY=UG` in its own `PARAM.SFO`; not a PBP at all |
+
+Only a title actually purchased and downloaded from the PSN Store — a PSP
+"mini", a PSOne classic, or a full PSP game bought digitally — takes the EG
+path. Demos were distributed as plain MG.
+
+`pspbuild inspect` answers the question directly: check that `Category` reads
+`EG` and that the `DATA.PSAR` row is identified as `NPUMDIMG`.
 
 ## 2. Shape of the pipeline
 
@@ -120,9 +145,25 @@ that has been demonstrated against known answers.
 - Exactly which bytes are signed.
 
 The plan notes that a recovered NPUMDIMG private key is available and that
-genuine signing is therefore the goal rather than fake-signing. That key is not
-in this repository, and would need to be supplied. Whatever is produced, every
-generated signature must be verified before it is emitted.
+genuine signing is therefore the goal rather than fake-signing.
+
+The keys live in `sign_np.h` in the published `sign_np` source, as
+`npumdimg_private_key` (0x14 bytes, a 160-bit scalar) and
+`npumdimg_public_key` (0x28 bytes, an uncompressed point — two 160-bit
+coordinates). The sizes are consistent with the 160-bit curve KIRK's ECDSA
+commands use, and with the `ecdsa_sig` field in that header being 0x28 bytes:
+`r` and `s` at 20 bytes each.
+
+They are **not vendored here yet**, deliberately. Copying key material in
+before there is anything to sign, and before the signing flow has been derived
+from a real file, would put constants in the repository that nothing exercises
+and nothing validates — precisely the "looks finished" failure this document
+exists to avoid. They go in alongside a working
+`sign_npumdimg`/`verify_npumdimg_signature` pair, with an entry in
+[KEYS.md](KEYS.md) recording purpose, format and source.
+
+Whatever is produced, every generated signature must be verified before it is
+emitted.
 
 ### 3.6 `DATA.PSP`, PGD, STARTDAT, OPNSSMP
 
