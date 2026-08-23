@@ -65,6 +65,7 @@ pspbuild encrypt-prx EBOOT.PBP -o signed/EBOOT.PBP
 
 # Show what a file is and what is inside it
 pspbuild inspect EBOOT.PBP
+pspbuild inspect game.iso        # UMD images too, without loading them
 
 # Check the container, the header hash, both CMAC tags and the payload
 pspbuild verify EBOOT.PBP
@@ -165,7 +166,9 @@ two are genuinely different pipelines rather than options on one.
   there is no signature anywhere in the chain. **Implemented.**
 - **EG** — downloaded games. `DATA.PSP` is an NPDRM container and `DATA.PSAR`
   holds an `NPUMDIMG` encrypted ISO. **Not implemented**; `build-eg` says so
-  rather than guessing. See [docs/EG.md](docs/EG.md).
+  rather than guessing. The ISO reader it needs is done and validated against a
+  retail UMD, but the NPUMDIMG format cannot be pinned down without a known-good
+  EG EBOOT to check against. See [docs/EG.md](docs/EG.md).
 
 `pspbuild` refuses to run one pipeline against a container that asks for the
 other, and never silently falls back between them.
@@ -173,8 +176,8 @@ other, and never silently falls back between them.
 ## Documentation
 
 [docs/](docs/) describes the formats themselves rather than the code:
-[PBP.md](docs/PBP.md), [FORMAT.md](docs/FORMAT.md), [MG.md](docs/MG.md),
-[EG.md](docs/EG.md), [KEYS.md](docs/KEYS.md) and
+[PBP.md](docs/PBP.md), [ISO.md](docs/ISO.md), [FORMAT.md](docs/FORMAT.md),
+[MG.md](docs/MG.md), [EG.md](docs/EG.md), [KEYS.md](docs/KEYS.md) and
 [COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ## Known limitations

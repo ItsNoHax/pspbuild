@@ -18,18 +18,25 @@ currently on hand:
 
 | needed | status |
 | --- | --- |
-| known-good EG `EBOOT.PBP` fixtures | **not available** — none in the repo or on disk |
+| known-good EG `EBOOT.PBP` fixtures | **still not available** — none in the repo or on disk |
 | `sign_np` source | not vendored |
 | `ebootsigner` source | not vendored |
 | PSPSDK `PrxEncrypter` source | available, but MG-only |
 | `libkirk` / PPSSPP KIRK | available via the existing `kirk` module |
-| a PSP ISO to test against | **not available** |
+| a PSP ISO to test against | **available** — a retail UMD, see [ISO.md](ISO.md) |
+| an ISO9660 reader | **implemented**, validated against that disc |
 
-Without at least one known-good EG EBOOT there is no way to validate a single
-structure in this document. Writing an `NpUmdImgHeader` with named fields would
-produce something that compiles, passes its own tests, and has never been
-checked against a file the PSP accepts. That is worse than an unimplemented
-command, because it looks finished.
+The input side is now done. `pspbuild` reads a real UMD, enumerates it, pulls
+out every `PSP_GAME` asset and serves raw sectors, without loading the image
+into memory. What that unblocks is section 4.1 below; what it does not unblock
+is everything downstream of it.
+
+The remaining blocker is unchanged and is the important one: **without at least
+one known-good EG EBOOT there is no way to validate a single structure in
+section 3.** Writing an `NpUmdImgHeader` with named fields would produce
+something that compiles, passes its own tests, and has never been checked
+against a file the PSP accepts. That is worse than an unimplemented command,
+because it looks finished.
 
 ## 2. Shape of the pipeline
 
@@ -38,7 +45,7 @@ of existing tools:
 
 ```text
 PSP ISO
- └─ ISO9660 reader                extract PSP_GAME assets and EBOOT.BIN
+ └─ ISO9660 reader                extract PSP_GAME assets and EBOOT.BIN   DONE
      └─ NP table                  per-block offsets, sizes, MACs
          └─ block encryption      the ISO in fixed-size encrypted blocks
              └─ NPUMDIMG          header + NP table + encrypted blocks
@@ -130,15 +137,29 @@ In rough order of value:
 
 1. **One known-good EG `EBOOT.PBP`.** Everything else can be validated against
    it. Two, from different titles, would separate per-title values from
-   constants.
-2. **A small PSP ISO** to run a candidate pipeline over.
-3. **The NPUMDIMG private key**, if genuine signing is wanted.
-4. `sign_np` and `ebootsigner` sources, as behavioural references — useful for
+   constants. This is now the *only* thing blocking section 3.
+2. **The NPUMDIMG private key**, if genuine signing is wanted. It is not in this
+   repository.
+3. `sign_np` and `ebootsigner` sources, as behavioural references — useful for
    generating differential test cases, not as a specification to copy.
 
 With (1) alone, most of section 3 becomes answerable: `pspbuild` already has the
-PBP parser, the inspection tooling and the KIRK primitives needed to take a real
-file apart and check each hypothesis against it.
+PBP parser, the ISO reader, the inspection tooling and the KIRK primitives
+needed to take a real file apart and check each hypothesis against it.
+
+### 4.1 What the ISO reader already provides
+
+Available now, and enough to build the input half of the pipeline against:
+
+- `Iso::open` on a retail UMD, with the volume descriptor checked against the
+  file's real length.
+- `read_file` / `read_optional` for the `PSP_GAME` assets that become PBP
+  sections, distinguishing "absent" from "unreadable" — `SND0.AT3` is missing
+  from the reference disc, so that distinction is not hypothetical.
+- `read_blocks` for raw sectors, which is how the archive will be built.
+- Disc identification from `UMD_DATA.BIN`.
+
+What it deliberately does not do is guess at what happens to those sectors next.
 
 ## 5. Design commitment
 

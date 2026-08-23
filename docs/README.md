@@ -7,6 +7,7 @@ against a real file — that is stated.
 | document | covers |
 | --- | --- |
 | [PBP.md](PBP.md) | the `EBOOT.PBP` container and `PARAM.SFO`, byte by byte |
+| [ISO.md](ISO.md) | PSP UMD images: ISO9660 as a disc actually uses it, and the PSP layout |
 | [FORMAT.md](FORMAT.md) | the encrypted PRX: the `~PSP` header, the KIRK CMD1 container, and why dynamic sizing is possible |
 | [MG.md](MG.md) | the MG security path end to end, and how it differs from the legacy tools |
 | [EG.md](EG.md) | the EG/NPDRM path: what is known, what is not, and what would unblock it |

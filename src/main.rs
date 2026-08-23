@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use cli::{Cli, Command, derive_output_path};
-use pspbuild::inspect::{Inspection, inspect};
+use pspbuild::inspect::{FileFormat, Inspection, IsoReport, inspect, inspect_iso};
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
 use pspbuild::pbp::{Pbp, PbpSection};
 use pspbuild::{Container, EncryptOptions, Error, decrypt_prx, encrypt_prx, verify_prx};
@@ -152,6 +152,15 @@ fn run(cli: &Cli) -> Result<(), Error> {
         }),
 
         Command::Inspect { input } => {
+            // An ISO can be 1.8 GB. Classify from a prefix and stream it rather
+            // than reading the whole file to find out what it is.
+            if detect_file(input)? == FileFormat::Iso9660 {
+                let file = std::fs::File::open(input).map_err(|e| Error::io(input, e))?;
+                let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+                let report = inspect_iso(file)?;
+                print_iso(&report, size);
+                return Ok(());
+            }
             let data = read(input)?;
             let report = inspect(&data)?;
             print_inspection(&report);
@@ -268,6 +277,21 @@ fn print_inspection(report: &Inspection) {
         let _ = writeln!(out);
     }
 
+    // A standalone PARAM.SFO has no container to list it under, so show the
+    // table itself — it is the whole content of the file.
+    if report.container.is_none()
+        && let Some(sfo) = &report.param_sfo
+    {
+        let _ = writeln!(out, "\nEntries:");
+        for entry in &sfo.entries {
+            let value = entry
+                .as_text()
+                .or_else(|| entry.as_u32().map(|n| n.to_string()))
+                .unwrap_or_else(|| format!("<{} bytes>", entry.data.len()));
+            let _ = writeln!(out, "  {:<16} {value}", entry.key);
+        }
+    }
+
     match (&report.module, &report.module_error) {
         (Some(info), _) => {
             let _ = writeln!(out, "Executable:");
@@ -294,6 +318,80 @@ fn print_inspection(report: &Inspection) {
             let _ = writeln!(out, "Executable:          {error}");
         }
         (None, None) => {}
+    }
+}
+
+/// Classify a file by reading only as much of it as detection needs.
+fn detect_file(path: &Path) -> Result<FileFormat, Error> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| Error::io(path, e))?;
+    let mut prefix = vec![0u8; FileFormat::detect_prefix()];
+    // A short file is not an error here — it just cannot be an ISO.
+    let mut filled = 0;
+    loop {
+        match file.read(&mut prefix[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(Error::io(path, e)),
+        }
+        if filled == prefix.len() {
+            break;
+        }
+    }
+    prefix.truncate(filled);
+    Ok(FileFormat::detect(&prefix))
+}
+
+fn print_iso(report: &IsoReport, file_size: u64) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "Format:              ISO9660 image (UMD)");
+    let _ = writeln!(out, "File size:           {file_size} bytes");
+    let _ = writeln!(out, "System identifier:   {}", report.volume.system_id);
+    if !report.volume.volume_id.is_empty() {
+        let _ = writeln!(out, "Volume identifier:   {}", report.volume.volume_id);
+    }
+    let _ = writeln!(
+        out,
+        "Volume size:         {} blocks ({} bytes)",
+        report.volume.volume_blocks,
+        u64::from(report.volume.volume_blocks) * pspbuild::iso::SECTOR_SIZE
+    );
+    let _ = writeln!(out, "Entries:             {}", report.entry_count);
+    if let Some(disc) = &report.disc_id {
+        let _ = writeln!(out, "Disc identifier:     {disc}");
+    }
+
+    let _ = writeln!(out, "\nPSP_GAME assets:");
+    for asset in &report.assets {
+        match asset.size {
+            Some(size) => {
+                let _ = writeln!(out, "  {:<24} {:>10} bytes", asset.path, size);
+            }
+            None => {
+                let _ = writeln!(out, "  {:<24} {:>10}", asset.path, "absent");
+            }
+        }
+    }
+    match report.eboot_size {
+        Some(size) => {
+            let _ = writeln!(out, "  {:<24} {size:>10} bytes", pspbuild::iso::EBOOT_BIN);
+        }
+        None => {
+            let _ = writeln!(out, "  {:<24} {:>10}", pspbuild::iso::EBOOT_BIN, "absent");
+        }
+    }
+
+    if let Some(sfo) = &report.param_sfo {
+        let _ = writeln!(out, "\nPARAM.SFO:");
+        for entry in &sfo.entries {
+            let value = entry
+                .as_text()
+                .or_else(|| entry.as_u32().map(|n| n.to_string()))
+                .unwrap_or_else(|| format!("<{} bytes>", entry.data.len()));
+            let _ = writeln!(out, "  {:<16} {value}", entry.key);
+        }
     }
 }
 

@@ -40,19 +40,37 @@ pub enum FileFormat {
     Riff,
     /// PSMF/PMF video.
     Pmf,
+    /// An ISO9660 image, i.e. a UMD.
+    Iso9660,
     /// Nothing at all.
     Empty,
     /// Not recognised.
     Unknown,
 }
 
+/// Offset of the `CD001` standard identifier: sector 16, one byte in.
+pub const ISO_MAGIC_OFFSET: usize = 16 * 2048 + 1;
+
 impl FileFormat {
     /// Identify a blob by its magic.
+    ///
+    /// `data` may be a prefix of the file. Detecting an ISO needs the first
+    /// 32 KiB, so callers that only pass a short prefix will not see one —
+    /// which is why [`detect_prefix`](Self::detect_prefix) exists to make that
+    /// requirement explicit.
     pub fn detect(data: &[u8]) -> Self {
         if data.is_empty() {
             return FileFormat::Empty;
         }
         let starts = |magic: &[u8]| data.len() >= magic.len() && &data[..magic.len()] == magic;
+
+        // Checked before the byte-zero magics: an ISO is identified deep in the
+        // file, and its first sectors are conventionally zero.
+        if data.len() >= ISO_MAGIC_OFFSET + 5
+            && &data[ISO_MAGIC_OFFSET..ISO_MAGIC_OFFSET + 5] == b"CD001"
+        {
+            return FileFormat::Iso9660;
+        }
 
         if starts(&crate::pbp::PBP_MAGIC) {
             FileFormat::Pbp
@@ -95,9 +113,29 @@ impl FileFormat {
             FileFormat::Png => "PNG image",
             FileFormat::Riff => "RIFF/AT3 audio",
             FileFormat::Pmf => "PSMF video",
+            FileFormat::Iso9660 => "ISO9660 image (UMD)",
             FileFormat::Empty => "empty",
             FileFormat::Unknown => "unrecognised",
         }
+    }
+
+    /// How many bytes [`detect`](Self::detect) needs to identify every format.
+    ///
+    /// Reading this much of a file is enough to classify it, which matters when
+    /// the file is a 1.8 GB UMD that must not be loaded into memory.
+    pub const fn detect_prefix() -> usize {
+        ISO_MAGIC_OFFSET + 5
+    }
+
+    /// Whether a file of this format could contain a PSP executable.
+    ///
+    /// A `PARAM.SFO` or a PNG is not a broken module, it is simply not a
+    /// module, and reporting a PRX parse failure for one is misleading.
+    pub fn may_hold_executable(self) -> bool {
+        matches!(
+            self,
+            FileFormat::EncryptedPrx | FileFormat::PlainElf | FileFormat::Unknown
+        )
     }
 }
 
@@ -129,6 +167,28 @@ pub struct ContainerReport {
     pub sections: Vec<SectionReport>,
 }
 
+/// One asset the EG pipeline looks for in an image.
+#[derive(Debug, Clone)]
+pub struct IsoAsset {
+    pub path: String,
+    /// `None` when the image does not carry it, which is normal.
+    pub size: Option<u64>,
+}
+
+/// The contents of a UMD image.
+#[derive(Debug, Clone)]
+pub struct IsoReport {
+    pub volume: crate::iso::VolumeInfo,
+    pub entry_count: usize,
+    /// The `PSP_GAME` assets that would become PBP sections.
+    pub assets: Vec<IsoAsset>,
+    pub eboot_size: Option<u64>,
+    /// The `UMD_DATA.BIN` line, e.g. `ULUS-10380|...|0001|G`.
+    pub disc_id: Option<String>,
+    /// The image's own `PARAM.SFO`.
+    pub param_sfo: Option<Sfo>,
+}
+
 /// What a file turned out to be.
 #[derive(Debug, Clone)]
 pub struct Inspection {
@@ -136,9 +196,16 @@ pub struct Inspection {
     pub total_size: u64,
     /// Present when the file is a PBP.
     pub container: Option<ContainerReport>,
+    /// Present when the file is an ISO.
+    pub iso: Option<IsoReport>,
+    /// A parameter table, when the file is one or carries one.
+    pub param_sfo: Option<Sfo>,
     /// The executable, whether it was bare or inside a container.
     pub module: Option<PrxInfo>,
     /// Why the executable could not be read, when it could not.
+    ///
+    /// Only set for files that could plausibly hold one. A PNG does not get an
+    /// error here; it simply has no executable.
     pub module_error: Option<String>,
 }
 
@@ -147,6 +214,38 @@ impl Inspection {
     pub fn category(&self) -> Option<&Category> {
         self.container.as_ref().and_then(|c| c.category.as_ref())
     }
+}
+
+/// Inspect a UMD image without loading it into memory.
+pub fn inspect_iso<R: std::io::Read + std::io::Seek>(source: R) -> Result<IsoReport> {
+    let mut iso = crate::iso::Iso::new(source)?;
+
+    let assets = crate::iso::PSP_GAME_ASSETS
+        .iter()
+        .map(|(path, _)| IsoAsset {
+            path: (*path).to_owned(),
+            size: iso.file_size(path),
+        })
+        .collect();
+
+    let disc_id = iso
+        .read_optional(crate::iso::UMD_DATA_BIN)?
+        .map(|raw| String::from_utf8_lossy(&raw).replace('\0', "").to_string());
+
+    // A UMD whose PARAM.SFO does not parse is still worth reporting on, so a
+    // failure here is dropped rather than failing the whole inspection.
+    let param_sfo = iso
+        .read_optional("/PSP_GAME/PARAM.SFO")?
+        .and_then(|raw| Sfo::parse(&raw).ok());
+
+    Ok(IsoReport {
+        volume: iso.volume().clone(),
+        entry_count: iso.entries().count(),
+        assets,
+        eboot_size: iso.file_size(crate::iso::EBOOT_BIN),
+        disc_id,
+        param_sfo,
+    })
 }
 
 /// Inspect any supported file.
@@ -159,16 +258,43 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
     let format = FileFormat::detect(data);
     let total_size = data.len() as u64;
 
+    if format == FileFormat::Iso9660 {
+        // Only reachable when a caller handed over a whole image; the CLI
+        // streams instead. Reuse the streaming path rather than duplicating it.
+        let report = inspect_iso(std::io::Cursor::new(data))?;
+        return Ok(Inspection {
+            format,
+            total_size,
+            container: None,
+            param_sfo: report.param_sfo.clone(),
+            iso: Some(report),
+            module: None,
+            module_error: None,
+        });
+    }
+
     if format != FileFormat::Pbp {
-        // A bare file: the only thing that can be inside it is a module.
-        let (module, module_error) = match inspect_prx(data) {
-            Ok(info) => (Some(info), None),
-            Err(e) => (None, Some(e.to_string())),
+        // A bare file. Only attempt to read a module out of it if it could
+        // plausibly be one — a PARAM.SFO is not a broken PRX.
+        let (module, module_error) = if format.may_hold_executable() {
+            match inspect_prx(data) {
+                Ok(info) => (Some(info), None),
+                Err(e) => (None, Some(e.to_string())),
+            }
+        } else {
+            (None, None)
+        };
+        let param_sfo = if format == FileFormat::ParamSfo {
+            Sfo::parse(data).ok()
+        } else {
+            None
         };
         return Ok(Inspection {
             format,
             total_size,
             container: None,
+            iso: None,
+            param_sfo,
             module,
             module_error,
         });
@@ -193,11 +319,13 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
             .collect(),
     };
 
+    let mut param_sfo = None;
     match pbp.param_sfo() {
         Ok(sfo) => {
             report.category = sfo.category();
             report.title = sfo.get_text("TITLE");
             report.system_version = sfo.get_text("PSP_SYSTEM_VER");
+            param_sfo = Some(sfo);
         }
         Err(e) => report.param_sfo_error = Some(e.to_string()),
     }
@@ -224,6 +352,8 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
         format,
         total_size,
         container: Some(report),
+        iso: None,
+        param_sfo,
         module,
         module_error,
     })
@@ -369,6 +499,65 @@ mod tests {
         assert!(container.category.is_none());
         assert!(report.module_error.is_some());
         assert_eq!(container.sections.len(), crate::pbp::SECTION_COUNT);
+    }
+
+    #[test]
+    fn a_param_sfo_is_not_reported_as_a_broken_executable() {
+        // It is a parameter table, not a corrupt module. Reporting a PRX parse
+        // failure for one sends the reader looking for damage that is not there.
+        let sfo = mg_param_sfo("Standalone").unwrap();
+        let report = inspect(&sfo.to_bytes()).unwrap();
+
+        assert_eq!(report.format, FileFormat::ParamSfo);
+        assert!(report.module.is_none());
+        assert!(
+            report.module_error.is_none(),
+            "got {:?}",
+            report.module_error
+        );
+        // The table itself is what the file contains, so it is reported.
+        let parsed = report.param_sfo.expect("PARAM.SFO contents");
+        assert_eq!(parsed.get_text("TITLE").as_deref(), Some("Standalone"));
+    }
+
+    #[test]
+    fn other_non_executable_formats_report_no_executable_at_all() {
+        for data in [
+            b"\x89PNG\r\n\x1a\n and pixels".to_vec(),
+            b"RIFF....WAVEfmt ".to_vec(),
+            b"NPUMDIMG and then encrypted data".to_vec(),
+        ] {
+            let report = inspect(&data).unwrap();
+            assert!(!report.format.may_hold_executable(), "{}", report.format);
+            assert!(report.module.is_none());
+            assert!(report.module_error.is_none(), "{}", report.format);
+        }
+
+        // A blob that could be a module still reports why it is not one.
+        let report = inspect(&vec![0xFFu8; 500]).unwrap();
+        assert_eq!(report.format, FileFormat::Unknown);
+        assert!(report.module_error.is_some());
+    }
+
+    #[test]
+    fn detects_an_iso_by_its_descriptor_not_its_first_bytes() {
+        // An ISO identifies itself at sector 16; its first sectors are zero,
+        // which must not be mistaken for an empty or unrecognised file.
+        let iso =
+            crate::iso::reader::tests::synthetic_iso(&[crate::iso::reader::tests::TestFile {
+                path: "/PARAM.SFO",
+                data: crate::sfo::mg_param_sfo("On A Disc").unwrap().to_bytes(),
+            }]);
+        assert_eq!(FileFormat::detect(&iso), FileFormat::Iso9660);
+
+        let report = inspect(&iso).unwrap();
+        assert_eq!(report.format, FileFormat::Iso9660);
+        let iso_report = report.iso.expect("ISO report");
+        assert_eq!(iso_report.volume.system_id, "PSP GAME");
+        assert!(iso_report.entry_count > 0);
+
+        // Truncating before sector 16 must not still look like an ISO.
+        assert_ne!(FileFormat::detect(&iso[..1000]), FileFormat::Iso9660);
     }
 
     #[test]

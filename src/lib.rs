@@ -23,6 +23,7 @@ pub mod crypto;
 pub mod error;
 pub mod format;
 pub mod inspect;
+pub mod iso;
 pub mod kirk;
 pub mod mg;
 pub mod pbp;

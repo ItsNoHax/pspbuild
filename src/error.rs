@@ -40,6 +40,12 @@ pub enum Error {
     #[error("expected a {expected} PBP but PARAM.SFO says CATEGORY={actual}")]
     CategoryMismatch { expected: String, actual: String },
 
+    #[error("invalid ISO image: {0}")]
+    InvalidIso(String),
+
+    #[error("ISO is missing {0}")]
+    IsoMissingFile(String),
+
     #[error("{pipeline} pipeline is not implemented yet: {detail}")]
     Unimplemented {
         pipeline: &'static str,
