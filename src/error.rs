@@ -31,6 +31,21 @@ pub enum Error {
     #[error("unsupported PSPemu/PBOOT format: {0}")]
     UnsupportedPspEmu(String),
 
+    #[error("invalid PBP container: {0}")]
+    InvalidPbp(String),
+
+    #[error("invalid PARAM.SFO: {0}")]
+    InvalidSfo(String),
+
+    #[error("expected a {expected} PBP but PARAM.SFO says CATEGORY={actual}")]
+    CategoryMismatch { expected: String, actual: String },
+
+    #[error("{pipeline} pipeline is not implemented yet: {detail}")]
+    Unimplemented {
+        pipeline: &'static str,
+        detail: String,
+    },
+
     #[error("unknown encryption tag {tag:#010X}")]
     UnknownTag { tag: u32 },
 

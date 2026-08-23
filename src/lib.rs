@@ -24,11 +24,14 @@ pub mod crypto;
 pub mod error;
 pub mod format;
 pub mod kirk;
+pub mod mg;
 pub mod pbp;
 pub mod prx;
 pub mod psp;
+pub mod sfo;
 
 pub use error::{Error, Result};
+pub use sfo::{Category, Sfo};
 
 use crate::format::align_to_block;
 use crate::kirk::commands::cmd1_decrypt;
