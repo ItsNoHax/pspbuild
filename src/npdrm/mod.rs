@@ -33,6 +33,7 @@ pub mod fixed_key;
 pub mod keys;
 pub mod lzrc;
 pub mod npumdimg;
+pub mod random;
 pub mod table;
 
 #[cfg(test)]
@@ -44,4 +45,5 @@ pub use blocks::{BlockLayout, decrypt_block, encrypt_block};
 pub use ecdsa::Signature;
 pub use fixed_key::{FIXED_KEY_FLAG, fixed_key};
 pub use npumdimg::{header_digest, sign_header, verify_header};
+pub use random::{Entropy, SystemEntropy};
 pub use table::{BlockEntry, ENTRY_SIZE};

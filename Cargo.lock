@@ -538,6 +538,7 @@ dependencies = [
  "clap",
  "cmac",
  "flate2",
+ "getrandom 0.3.4",
  "num-bigint",
  "num-integer",
  "predicates",

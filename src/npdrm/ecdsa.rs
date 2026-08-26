@@ -47,6 +47,8 @@
 
 use num_bigint::BigUint;
 
+use crate::crypto::hmac::hmac_sha1;
+
 use crate::crypto::ec::{Curve, Point, mod_inverse};
 use crate::crypto::sha1::Digest160;
 use crate::error::{Error, Result};
@@ -121,6 +123,77 @@ impl Signature {
         out[SCALAR_SIZE..].copy_from_slice(&self.s);
         out
     }
+}
+
+/// Sign `digest` with `private_key`, deriving the nonce deterministically.
+///
+/// # Why this rather than a random nonce
+///
+/// ECDSA's one catastrophic failure mode is nonce reuse: two signatures made
+/// under the same key with the same `k` expose the private key by elementary
+/// algebra. The usual defence is a good random number generator, which means
+/// the security of every signature rests on something that is easy to get
+/// wrong, impossible to check by looking at the output, and — in a build tool
+/// that may run in a container or a CI runner — not always well seeded.
+///
+/// RFC 6979 removes the failure mode instead of guarding it. The nonce is
+/// derived by HMAC-SHA1 from the private key and the message, so two different
+/// messages cannot collide and the same message always signs identically.
+/// There is no entropy source to get wrong.
+///
+/// The signature is a normal ECDSA signature and verifies as one; nothing
+/// about the format cares how `k` was chosen. A pleasant side effect is that
+/// signing becomes reproducible, so a built archive differs between runs only
+/// where the format genuinely requires randomness.
+pub fn sign_deterministic(
+    digest: &Digest160,
+    private_key: &[u8; SCALAR_SIZE],
+) -> Result<Signature> {
+    let curve = curve();
+    let n = &curve.n;
+
+    let d = BigUint::from_bytes_be(private_key);
+    if d == BigUint::ZERO || d >= *n {
+        return Err(Error::Crypto(
+            "ECDSA private key is out of range 1..n".into(),
+        ));
+    }
+
+    // RFC 6979 §3.2. Both the order and SHA-1's output are 160 bits here, so
+    // the bit-length conversions the RFC describes are plain byte copies.
+    let h1 = digest;
+    let e = to_scalar(&(BigUint::from_bytes_be(h1) % n));
+
+    let mut v = [0x01u8; 20];
+    let mut k = [0x00u8; 20];
+
+    k = hmac_sha1(&k, &[&v, &[0x00], private_key, &e]);
+    v = hmac_sha1(&k, &[&v]);
+    k = hmac_sha1(&k, &[&v, &[0x01], private_key, &e]);
+    v = hmac_sha1(&k, &[&v]);
+
+    // The RFC retries until the candidate is in range and yields a usable
+    // signature. A retry is astronomically unlikely on this curve, but the
+    // loop is what makes the construction correct rather than nearly correct.
+    for _ in 0..1000 {
+        v = hmac_sha1(&k, &[&v]);
+        let candidate = BigUint::from_bytes_be(&v);
+
+        if candidate != BigUint::ZERO && candidate < *n {
+            // A rejection here means r = 0 or s = 0, which the RFC handles
+            // by discarding the candidate and deriving the next one.
+            if let Ok(signature) = sign(digest, private_key, &to_scalar(&candidate)) {
+                return Ok(signature);
+            }
+        }
+
+        k = hmac_sha1(&k, &[&v, &[0x00]]);
+        v = hmac_sha1(&k, &[&v]);
+    }
+
+    Err(Error::Crypto(
+        "RFC 6979 failed to produce a usable ECDSA nonce".into(),
+    ))
 }
 
 /// Sign `digest` with `private_key`, using the one-time scalar `k`.
@@ -415,5 +488,58 @@ mod tests {
             s: [0u8; SCALAR_SIZE],
         };
         assert!(!verify(&digest, &NPUMDIMG_PUBLIC_KEY, &zero));
+    }
+
+    /// A deterministic signature is still an ordinary signature.
+    #[test]
+    fn a_deterministic_signature_verifies() {
+        let digest = digest_of(b"a message to sign");
+        let signature = sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY).unwrap();
+        assert!(verify(&digest, &NPUMDIMG_PUBLIC_KEY, &signature));
+    }
+
+    /// The whole point: the same input always produces the same nonce, so
+    /// there is no random number generator whose failure could leak the key.
+    #[test]
+    fn the_same_message_always_signs_identically() {
+        let digest = digest_of(b"stability");
+        let a = sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY).unwrap();
+        let b = sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY).unwrap();
+        assert_eq!(a.to_bytes(), b.to_bytes());
+    }
+
+    /// And the other half of the property: different messages must not share
+    /// a nonce, which shows up as a shared `r`.
+    #[test]
+    fn different_messages_do_not_share_a_nonce() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..32u32 {
+            let digest = digest_of(&i.to_le_bytes());
+            let signature = sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY).unwrap();
+            assert!(
+                seen.insert(signature.r),
+                "message {i} reused a nonce, which would expose the private key"
+            );
+            assert!(verify(&digest, &NPUMDIMG_PUBLIC_KEY, &signature));
+        }
+    }
+
+    /// The nonce depends on the key as well as the message, so the same
+    /// message under two keys must not collide either.
+    #[test]
+    fn the_private_key_changes_the_nonce() {
+        let digest = digest_of(b"same message");
+        let mut other = NPUMDIMG_PRIVATE_KEY;
+        other[19] ^= 0x01;
+
+        let a = sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY).unwrap();
+        let b = sign_deterministic(&digest, &other).unwrap();
+        assert_ne!(a.r, b.r);
+    }
+
+    #[test]
+    fn a_degenerate_private_key_is_refused() {
+        assert!(sign_deterministic(&digest_of(b"x"), &[0u8; SCALAR_SIZE]).is_err());
+        assert!(sign_deterministic(&digest_of(b"x"), &[0xFFu8; SCALAR_SIZE]).is_err());
     }
 }

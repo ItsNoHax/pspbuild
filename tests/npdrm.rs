@@ -380,12 +380,16 @@ fn the_signed_digest_excludes_the_kirk_length_word() {
 /// Re-signing a real header with our own key must produce something that
 /// verifies, which is the closest we can get to a differential test of a
 /// non-reproducible output.
+///
+/// Our signature will not equal Sony's: they drew a random nonce and we derive
+/// one deterministically, so the two land on different points. Both are valid
+/// signatures over the same bytes under the same key.
 #[test]
 fn we_can_re_sign_a_real_header() {
     let mut header = header_or_skip!();
     let original = header[field::SIGNATURE].to_vec();
 
-    pspbuild::npdrm::sign_header(&mut header, &[0x5Au8; 20]).expect("signing succeeds");
+    pspbuild::npdrm::sign_header(&mut header).expect("signing succeeds");
     assert_ne!(
         header[field::SIGNATURE].to_vec(),
         original,

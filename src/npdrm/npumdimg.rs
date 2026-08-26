@@ -7,7 +7,7 @@
 
 use crate::crypto::sha1::{Digest160, sha1};
 use crate::error::{Error, Result};
-use crate::npdrm::ecdsa::{self, SCALAR_SIZE, Signature};
+use crate::npdrm::ecdsa::{self, Signature};
 use crate::npdrm::keys::{NPUMDIMG_PRIVATE_KEY, NPUMDIMG_PUBLIC_KEY};
 
 /// The NPUMDIMG header, in bytes.
@@ -47,10 +47,11 @@ pub fn header_digest(header: &[u8]) -> Result<Digest160> {
 
 /// Sign a header in place, writing the signature at 0xD8.
 ///
-/// `nonce` is the ECDSA one-time scalar; see [`ecdsa::sign`] for why it is a
-/// parameter rather than drawn here. It must be unpredictable and never
-/// reused between two different headers.
-pub fn sign_header(header: &mut [u8], nonce: &[u8; SCALAR_SIZE]) -> Result<Signature> {
+/// The nonce is derived from the header and the key by RFC 6979 rather than
+/// drawn from a generator, so signing the same header twice gives the same
+/// signature and no entropy source can compromise the key. See
+/// [`ecdsa::sign_deterministic`].
+pub fn sign_header(header: &mut [u8]) -> Result<Signature> {
     if header.len() < HEADER_SIZE {
         return Err(Error::TooShort {
             expected: HEADER_SIZE,
@@ -58,7 +59,7 @@ pub fn sign_header(header: &mut [u8], nonce: &[u8; SCALAR_SIZE]) -> Result<Signa
         });
     }
     let digest = header_digest(header)?;
-    let signature = ecdsa::sign(&digest, &NPUMDIMG_PRIVATE_KEY, nonce)?;
+    let signature = ecdsa::sign_deterministic(&digest, &NPUMDIMG_PRIVATE_KEY)?;
     header[SIGNATURE_OFFSET..HEADER_SIZE].copy_from_slice(&signature.to_bytes());
 
     // A signature that does not verify is worse than none: it would ship and
@@ -107,7 +108,7 @@ mod tests {
         let mut header = scratch_header();
         assert!(!verify_header(&header).unwrap(), "unsigned header verified");
 
-        sign_header(&mut header, &[0x37u8; SCALAR_SIZE]).unwrap();
+        sign_header(&mut header).unwrap();
         assert!(verify_header(&header).unwrap());
     }
 
@@ -116,7 +117,7 @@ mod tests {
     #[test]
     fn every_byte_below_the_signature_is_covered() {
         let mut header = scratch_header();
-        sign_header(&mut header, &[0x37u8; SCALAR_SIZE]).unwrap();
+        sign_header(&mut header).unwrap();
 
         for offset in [0x00, 0x08, 0x10, 0x40, 0xA0, 0xC0, 0xD0, 0xD7] {
             let mut tampered = header.clone();
@@ -137,22 +138,38 @@ mod tests {
         assert_eq!(header_digest(&header).unwrap(), before);
     }
 
+    /// Signing is reproducible: the same header always yields the same
+    /// signature, because the nonce is derived from the header rather than
+    /// drawn. Two runs of a build differ only where the format requires it.
     #[test]
-    fn signing_twice_with_different_nonces_gives_two_valid_headers() {
+    fn signing_the_same_header_twice_is_reproducible() {
         let mut a = scratch_header();
         let mut b = scratch_header();
-        sign_header(&mut a, &[0x11u8; SCALAR_SIZE]).unwrap();
-        sign_header(&mut b, &[0x22u8; SCALAR_SIZE]).unwrap();
+        sign_header(&mut a).unwrap();
+        sign_header(&mut b).unwrap();
 
-        assert_ne!(a, b, "different nonces should give different signatures");
+        assert_eq!(a, b, "identical headers signed differently");
         assert!(verify_header(&a).unwrap());
-        assert!(verify_header(&b).unwrap());
+    }
+
+    /// The other half: two different headers must not share a nonce, which
+    /// would expose the private key. A shared nonce shows up as a shared `r`.
+    #[test]
+    fn different_headers_do_not_share_a_nonce() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..16u8 {
+            let mut header = scratch_header();
+            header[0x40] = i;
+            let signature = sign_header(&mut header).unwrap();
+            assert!(seen.insert(signature.r), "header {i} reused a nonce");
+            assert!(verify_header(&header).unwrap());
+        }
     }
 
     #[test]
     fn a_short_header_is_an_error_not_a_panic() {
         assert!(header_digest(&[0u8; 0x40]).is_err());
         assert!(verify_header(&[0u8; 0x80]).is_err());
-        assert!(sign_header(&mut [0u8; 0x80], &[1u8; SCALAR_SIZE]).is_err());
+        assert!(sign_header(&mut [0u8; 0x80]).is_err());
     }
 }
