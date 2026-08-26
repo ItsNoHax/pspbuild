@@ -40,11 +40,25 @@ signature over `PARAM.SFO || content_id`, the NPUMDIMG header signature, the
 header hash, the block MACs and the data key, plus the geometry — `lba_end`,
 `nsectors`, `block_entry_offset` and the 0x100 alignment of `DATA.PSAR`.
 
-**Still outstanding: the negative control.** A boot proves the firmware accepts
-this container; it does not prove the firmware would *reject* a bad one. Until
-a deliberately corrupted signature has been shown to fail on the same console,
-"OFW validates our signature" remains an inference rather than a measurement.
-The test is cheap — one byte, flipped in place — and is filed as a task.
+**The negative control was run.** A boot on its own only shows the firmware
+accepts this container; it says nothing about whether the firmware would reject
+a bad one, and a loader that had stopped checking would look identical. So the
+signature was corrupted and the same console asked again:
+
+| container | result |
+| --- | --- |
+| as built | boots, game runs |
+| one byte flipped at `DATA.PSAR + 0xD8` | **refused — `80010087`** |
+
+The two differ by a single bit in the ECDSA signature and by nothing else:
+this crate's own verifier reports the archive signature invalid and the header
+hash, `DATA.PSP` signature, block MACs and data key all still valid, so the
+signature is the only thing that changed and the only thing that can explain
+the different outcome.
+
+That makes "official firmware validates the NPUMDIMG signature, and accepts
+ours" a measurement rather than an inference — which is the whole reason the
+control was worth running.
 
 ### 1.2 MG header fields
 
