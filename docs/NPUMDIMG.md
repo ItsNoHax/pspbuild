@@ -11,13 +11,14 @@ rest — see §7. Where a value is a *rule* it is stated as one; where it is a
 constant an implementation happens to write, that is said explicitly, because
 those are not the same claim.
 
-**Status: header and block layer implemented.** The header crypto chain of §3
-— BB-Cipher, BB-MAC, the fixed key, SHA-1 and ECDSA — and the block table and
-per-block crypto of §5 and §6, and LZRC decompression, are all implemented in
-`src/npdrm` and verified against real archives, Sony's included — a Sony
-archive reconstructs block for block into a UMD image that this crate's own
-ISO9660 reader parses. Not implemented: the LZRC *encoder*, and assembling a
-complete archive. See [EG.md](EG.md).
+**Status: implemented.** The header crypto chain of §3, the block table and
+per-block crypto of §5 and §6, and LZRC decompression are all in `src/npdrm`,
+and `pspbuild build-eg` writes complete archives. Verified against real
+archives, Sony's included: a Sony archive reconstructs block for block into a
+UMD image that this crate's own ISO9660 reader parses, and an archive built
+from a retail disc matches the reference implementation's for that disc in
+every section offset and in total size. Not implemented: the LZRC *encoder*,
+so blocks are stored raw. See [EG.md](EG.md).
 
 ## 1. Layout
 

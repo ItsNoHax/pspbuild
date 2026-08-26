@@ -408,8 +408,11 @@ fn extract_writes_every_populated_section() {
     );
 }
 
+/// A content ID is not optional. For a fixed-key title it derives the
+/// encryption key, so guessing one would silently produce an archive nothing
+/// could decrypt.
 #[test]
-fn build_eg_says_it_is_unimplemented_rather_than_guessing() {
+fn build_eg_requires_a_content_id() {
     let dir = TempDir::new().unwrap();
     let iso = dir.path().join("game.iso");
     std::fs::write(&iso, vec![0u8; 4096]).unwrap();
@@ -418,7 +421,26 @@ fn build_eg_says_it_is_unimplemented_rather_than_guessing() {
         .args(["build-eg", iso.to_str().unwrap()])
         .assert()
         .failure()
-        .stderr(contains("EG pipeline is not implemented yet"));
+        .stderr(contains("--content-id"));
+}
+
+/// Something that is not a UMD must be refused with a reason, not turned into
+/// an archive of nothing.
+#[test]
+fn build_eg_refuses_an_image_that_is_not_a_psp_disc() {
+    let dir = TempDir::new().unwrap();
+    let iso = dir.path().join("game.iso");
+    std::fs::write(&iso, vec![0u8; 64 * 2048]).unwrap();
+
+    cli()
+        .args([
+            "build-eg",
+            iso.to_str().unwrap(),
+            "--content-id",
+            "UL0000-ABCD12345_00-0000000000000000",
+        ])
+        .assert()
+        .failure();
 }
 
 #[test]

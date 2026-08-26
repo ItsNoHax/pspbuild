@@ -20,6 +20,7 @@
 //! ```
 
 pub mod crypto;
+pub mod eg;
 pub mod error;
 pub mod format;
 pub mod inspect;

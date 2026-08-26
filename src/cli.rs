@@ -79,7 +79,7 @@ pub enum Command {
         snd0: Option<PathBuf>,
     },
 
-    /// Build an EG EBOOT.PBP from a PSP ISO. Not implemented yet.
+    /// Build an EG EBOOT.PBP from a PSP ISO.
     BuildEg {
         /// Input PSP ISO.
         input: PathBuf,
@@ -87,6 +87,13 @@ pub enum Command {
         /// Output EBOOT.PBP.
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Content ID, e.g. UL0000-ABCD12345_00-0000000000000000.
+        ///
+        /// For a fixed-key title this also derives the encryption key, so it
+        /// must match what the container will be distributed as.
+        #[arg(long, value_name = "ID")]
+        content_id: String,
     },
 
     /// Report what a file is and what it contains.
@@ -203,7 +210,16 @@ mod tests {
         assert!(Cli::try_parse_from(["pspbuild", "verify", "a.prx"]).is_ok());
         assert!(Cli::try_parse_from(["pspbuild", "extract", "EBOOT.PBP", "-o", "out"]).is_ok());
         assert!(Cli::try_parse_from(["pspbuild", "build-mg", "game.prx"]).is_ok());
-        assert!(Cli::try_parse_from(["pspbuild", "build-eg", "game.iso"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "pspbuild",
+                "build-eg",
+                "game.iso",
+                "--content-id",
+                "UL0000-ABCD12345_00-0000000000000000",
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx", "a.prx", "--no-compress"]).is_ok());
         assert!(
             Cli::try_parse_from(["pspbuild", "encrypt-prx", "a.prx", "--format", "pspemu"]).is_ok()
@@ -212,6 +228,9 @@ mod tests {
         // Missing operands must fail rather than default to something.
         assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx"]).is_err());
         assert!(Cli::try_parse_from(["pspbuild", "build-mg"]).is_err());
+        // A content ID is not optional: for a fixed-key title it derives the
+        // encryption key, so there is no sensible default.
+        assert!(Cli::try_parse_from(["pspbuild", "build-eg", "game.iso"]).is_err());
         assert!(Cli::try_parse_from(["pspbuild"]).is_err());
     }
 

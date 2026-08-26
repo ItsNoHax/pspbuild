@@ -91,6 +91,15 @@ impl Iso<File> {
 }
 
 impl<R: Read + Seek> Iso<R> {
+    /// Give the underlying reader back.
+    ///
+    /// Useful when a caller has finished with the filesystem view and wants to
+    /// go on reading the image as raw bytes — building an archive from it, for
+    /// instance — without opening it a second time.
+    pub fn into_inner(self) -> R {
+        self.source
+    }
+
     /// Mount an image, reading its volume descriptors and directory tree.
     pub fn new(mut source: R) -> Result<Self> {
         let volume = read_primary_descriptor(&mut source)?;
@@ -506,6 +515,169 @@ pub(crate) mod tests {
         iso.resize((DATA_LBA as u64 * SECTOR_SIZE) as usize, 0);
         iso.extend_from_slice(&data_sectors);
         iso
+    }
+
+    /// A synthetic image with the directory layout a PSP UMD has.
+    ///
+    /// The flat [`synthetic_iso`] cannot express `/PSP_GAME/...`, and the EG
+    /// pipeline reads nothing else, so this builds the two levels it needs:
+    /// a root holding `PSP_GAME` and `UMD_DATA.BIN`, and a `PSP_GAME` holding
+    /// the assets and a `SYSDIR` with the executable.
+    pub(crate) fn synthetic_psp_iso() -> Vec<u8> {
+        fn both_u32(v: u32) -> [u8; 8] {
+            let mut out = [0u8; 8];
+            out[..4].copy_from_slice(&v.to_le_bytes());
+            out[4..].copy_from_slice(&v.to_be_bytes());
+            out
+        }
+        fn both_u16(v: u16) -> [u8; 4] {
+            let mut out = [0u8; 4];
+            out[..2].copy_from_slice(&v.to_le_bytes());
+            out[2..].copy_from_slice(&v.to_be_bytes());
+            out
+        }
+        fn record(name: &[u8], lba: u32, size: u32, is_dir: bool) -> Vec<u8> {
+            let len = DIR_RECORD_FIXED + name.len();
+            let padded = len + (len % 2);
+            let mut r = vec![0u8; padded];
+            r[0] = padded as u8;
+            r[2..10].copy_from_slice(&both_u32(lba));
+            r[10..18].copy_from_slice(&both_u32(size));
+            r[25] = if is_dir { 0x02 } else { 0x00 };
+            r[28..32].copy_from_slice(&both_u16(1));
+            r[32] = name.len() as u8;
+            r[DIR_RECORD_FIXED..DIR_RECORD_FIXED + name.len()].copy_from_slice(name);
+            r
+        }
+
+        // A UMD's own PARAM.SFO says UG; the EG pipeline has to rewrite it.
+        let mut sfo = crate::sfo::mg_param_sfo("Synthetic Disc").expect("template");
+        sfo.set(crate::sfo::SfoEntry::text_padded("CATEGORY", "UG", 4).expect("fits"));
+        sfo.set(crate::sfo::SfoEntry::text_padded("DISC_ID", "ABCD12345", 16).expect("fits"));
+        let param_sfo = sfo.to_bytes();
+
+        const ROOT_LBA: u32 = 20;
+        const GAME_LBA: u32 = 21;
+        const SYSDIR_LBA: u32 = 22;
+        const DATA_LBA: u32 = 24;
+
+        // Files, each starting on its own sector.
+        let files: Vec<(&str, Vec<u8>, u32)> = {
+            let entries: Vec<(&str, Vec<u8>)> = vec![
+                ("PARAM.SFO", param_sfo),
+                ("ICON0.PNG", vec![0x89; 600]),
+                ("PIC1.PNG", vec![0x77; 900]),
+                ("EBOOT.BIN", vec![0xAB; 5000]),
+                (
+                    "UMD_DATA.BIN",
+                    b"ABCD-12345|0000000000000000|0001|G".to_vec(),
+                ),
+            ];
+            let mut out = Vec::new();
+            let mut lba = DATA_LBA;
+            for (name, data) in entries {
+                let sectors = data.len().div_ceil(SECTOR_SIZE as usize) as u32;
+                out.push((name, data, lba));
+                lba += sectors;
+            }
+            out
+        };
+        let find = |name: &str| files.iter().find(|(n, _, _)| *n == name).expect("present");
+
+        let dir_extent = |entries: &[(&[u8], u32, u32, bool)], self_lba: u32, parent: u32| {
+            let mut d = Vec::new();
+            d.extend_from_slice(&record(&[0], self_lba, SECTOR_SIZE as u32, true));
+            d.extend_from_slice(&record(&[1], parent, SECTOR_SIZE as u32, true));
+            for (name, lba, size, is_dir) in entries {
+                d.extend_from_slice(&record(name, *lba, *size, *is_dir));
+            }
+            d.resize(SECTOR_SIZE as usize, 0);
+            d
+        };
+
+        let umd = find("UMD_DATA.BIN");
+        let root = dir_extent(
+            &[
+                (b"PSP_GAME", GAME_LBA, SECTOR_SIZE as u32, true),
+                (b"UMD_DATA.BIN", umd.2, umd.1.len() as u32, false),
+            ],
+            ROOT_LBA,
+            ROOT_LBA,
+        );
+
+        let sfo_f = find("PARAM.SFO");
+        let icon = find("ICON0.PNG");
+        let pic1 = find("PIC1.PNG");
+        let game = dir_extent(
+            &[
+                (b"SYSDIR", SYSDIR_LBA, SECTOR_SIZE as u32, true),
+                (b"PARAM.SFO", sfo_f.2, sfo_f.1.len() as u32, false),
+                (b"ICON0.PNG", icon.2, icon.1.len() as u32, false),
+                (b"PIC1.PNG", pic1.2, pic1.1.len() as u32, false),
+            ],
+            GAME_LBA,
+            ROOT_LBA,
+        );
+
+        let eboot = find("EBOOT.BIN");
+        let sysdir = dir_extent(
+            &[(b"EBOOT.BIN", eboot.2, eboot.1.len() as u32, false)],
+            SYSDIR_LBA,
+            GAME_LBA,
+        );
+
+        let mut data_sectors: Vec<u8> = Vec::new();
+        for (_, data, _) in &files {
+            let mut chunk = data.clone();
+            chunk.resize(chunk.len().next_multiple_of(SECTOR_SIZE as usize), 0);
+            data_sectors.extend_from_slice(&chunk);
+        }
+        let total_blocks = DATA_LBA + (data_sectors.len() / SECTOR_SIZE as usize) as u32;
+
+        let mut iso = vec![0u8; (FIRST_DESCRIPTOR_SECTOR * SECTOR_SIZE) as usize];
+
+        let mut pvd = vec![0u8; SECTOR_SIZE as usize];
+        pvd[0] = VD_PRIMARY;
+        pvd[1..6].copy_from_slice(STANDARD_ID);
+        pvd[6] = 1;
+        pvd[8..40].copy_from_slice(b"PSP GAME                        ");
+        pvd[40..72].copy_from_slice(b"                                ");
+        pvd[80..88].copy_from_slice(&both_u32(total_blocks));
+        pvd[128..132].copy_from_slice(&both_u16(SECTOR_SIZE as u16));
+        pvd[156..156 + 34].copy_from_slice(&{
+            let mut r = record(&[0], ROOT_LBA, SECTOR_SIZE as u32, true);
+            r.resize(34, 0);
+            r[0] = 34;
+            r
+        });
+        iso.extend_from_slice(&pvd);
+
+        let mut term = vec![0u8; SECTOR_SIZE as usize];
+        term[0] = VD_TERMINATOR;
+        term[1..6].copy_from_slice(STANDARD_ID);
+        term[6] = 1;
+        iso.extend_from_slice(&term);
+
+        iso.resize((ROOT_LBA as u64 * SECTOR_SIZE) as usize, 0);
+        iso.extend_from_slice(&root);
+        iso.extend_from_slice(&game);
+        iso.extend_from_slice(&sysdir);
+        iso.resize((DATA_LBA as u64 * SECTOR_SIZE) as usize, 0);
+        iso.extend_from_slice(&data_sectors);
+        iso
+    }
+
+    #[test]
+    fn the_synthetic_psp_image_has_the_umd_layout() {
+        let mut iso = Iso::new(Cursor::new(synthetic_psp_iso())).unwrap();
+        assert_eq!(iso.volume().system_id, "PSP GAME");
+        assert!(iso.exists("/PSP_GAME/PARAM.SFO"));
+        assert!(iso.exists("/PSP_GAME/SYSDIR/EBOOT.BIN"));
+        assert!(iso.exists("/UMD_DATA.BIN"));
+        assert!(!iso.exists("/PSP_GAME/SND0.AT3"));
+
+        let sfo = crate::sfo::Sfo::parse(&iso.read_file("/PSP_GAME/PARAM.SFO").unwrap()).unwrap();
+        assert_eq!(sfo.get_text("CATEGORY").as_deref(), Some("UG"));
     }
 
     fn sample() -> Vec<u8> {

@@ -378,24 +378,48 @@ fn the_signed_digest_excludes_the_kirk_length_word() {
 }
 
 /// Re-signing a real header with our own key must produce something that
-/// verifies, which is the closest we can get to a differential test of a
-/// non-reproducible output.
+/// verifies.
 ///
-/// Our signature will not equal Sony's: they drew a random nonce and we derive
-/// one deterministically, so the two land on different points. Both are valid
-/// signatures over the same bytes under the same key.
+/// Whether the result differs from what was there before depends on where the
+/// header came from, and both outcomes are correct:
+///
+/// - Sony's tooling and `sign_np` draw a random nonce, so their signature sits
+///   on a different point and ours will differ.
+/// - Our own signing is deterministic (RFC 6979), so re-signing a header this
+///   crate produced reproduces the identical signature.
+///
+/// Asserting a difference would therefore fail on our own output, which is
+/// exactly the case worth being able to run this against.
 #[test]
 fn we_can_re_sign_a_real_header() {
     let mut header = header_or_skip!();
     let original = header[field::SIGNATURE].to_vec();
 
     pspbuild::npdrm::sign_header(&mut header).expect("signing succeeds");
-    assert_ne!(
-        header[field::SIGNATURE].to_vec(),
-        original,
-        "our nonce should give a different signature than Sony's tooling did"
+    assert!(
+        pspbuild::npdrm::verify_header(&header).unwrap(),
+        "our own signature does not verify"
     );
-    assert!(pspbuild::npdrm::verify_header(&header).unwrap());
+
+    // Signing is a function of the header, so doing it twice must agree.
+    let once = header[field::SIGNATURE].to_vec();
+    pspbuild::npdrm::sign_header(&mut header).expect("signing succeeds");
+    assert_eq!(
+        once,
+        header[field::SIGNATURE],
+        "signing is not deterministic"
+    );
+
+    if once != original {
+        // A foreign header: the bytes it covers are unchanged, so the old
+        // signature must still verify over them too.
+        let mut restored = header;
+        restored[field::SIGNATURE].copy_from_slice(&original);
+        assert!(
+            pspbuild::npdrm::verify_header(&restored).unwrap(),
+            "the original signature stopped verifying"
+        );
+    }
 }
 
 /// A fixed-key archive is decryptable by anyone who knows its content ID, so

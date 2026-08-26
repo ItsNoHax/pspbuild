@@ -10,7 +10,7 @@ against a real file — that is stated.
 | [ISO.md](ISO.md) | PSP UMD images: ISO9660 as a disc actually uses it, and the PSP layout |
 | [FORMAT.md](FORMAT.md) | the encrypted PRX: the `~PSP` header, the KIRK CMD1 container, and why dynamic sizing is possible |
 | [MG.md](MG.md) | the MG security path end to end, and how it differs from the legacy tools |
-| [EG.md](EG.md) | the EG/NPDRM path: what is known, what is not, and what would unblock it |
+| [EG.md](EG.md) | the EG/NPDRM path: building a signed Store-format EBOOT from a UMD |
 | [NPUMDIMG.md](NPUMDIMG.md) | the EG archive format, byte by byte — header, block table, block crypto — checked against genuine Sony archives |
 | [KEYS.md](KEYS.md) | the key/tag matrix, and the distinction between category, tag, key and format |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | what has been tested, on what, and what has not |

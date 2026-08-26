@@ -1,15 +1,29 @@
-# The EG path — specification status
+# The EG path
 
 `CATEGORY=EG` is an emulated/downloaded game: a PSP ISO repackaged as a single
 `EBOOT.PBP` under NPDRM, the form PSN titles and `sign_np` output take.
 
-**This path is not finished.** `pspbuild build-eg` exists and fails with a
-message saying so, because nothing yet writes an archive. What *is* done is the
-research and the cryptography: the format is specified byte by byte, and every
-primitive the header needs is implemented and checked against a real file.
+**This path is implemented.** `pspbuild build-eg` turns a UMD image into a
+signed EG container:
 
-The remaining work is construction — the block table and block encryption — not
-investigation. See §4.
+```console
+$ pspbuild build-eg game.iso --content-id UL0000-ULUS10380_00-0000000000000000
+Title:               LEGO® Batman™: The Videogame
+Content ID:          UL0000-ULUS10380_00-0000000000000000
+Image size:          1136689152 bytes
+Blocks:              34689 of 32768 bytes, stored uncompressed
+DATA.PSAR:           1137799456 bytes
+Wrote EBOOT.PBP (1138357792 bytes)
+```
+
+For that disc the result matches `sign_np`'s byte for byte in every section
+offset and in total size; only the values the format requires to be random
+differ. The format itself was checked against four genuine Sony Store archives,
+not just against `sign_np` — see §1.
+
+What is left is listed in §4. The largest item is the LZRC *encoder*, whose
+absence makes archives about a third larger than Sony's rather than wrong, and
+a hardware boot test, which is a separate claim from format correctness.
 
 ## 1. What was needed, and what is in hand
 
@@ -255,21 +269,25 @@ length-prefixed digest does not.
 
 ## 4. What remains
 
-Section 3 is answered, and the specification has been checked against genuine
-Sony archives rather than only against `sign_np` (§1). The header chain, the
-block table, the per-block crypto and LZRC decompression are all implemented —
-a Sony archive reconstructs into a UMD image this crate can then read. What is
-left is construction:
+Section 3 is answered, the specification has been checked against genuine Sony
+archives rather than only against `sign_np` (§1), and the pipeline is built.
+`build-eg` on a retail UMD produces a container whose section offsets and total
+size are identical to the reference implementation's, with the only differences
+being the values the format requires to be random.
 
-1. **A source of randomness.** Signing needs a one-time nonce and the header
-   needs a `header_key` and `padding`; all three are currently parameters with
-   no producer behind them. That is deliberate — it keeps the crypto testable
-   and reproducible — but something has to supply them before an archive can be
-   written.
-2. **Assembling an archive.** The pieces exist; nothing yet writes a finished
-   `DATA.PSAR` from an ISO. Blocks would be stored raw, since only the LZRC
-   decoder is implemented — valid, just larger than Sony's.
-3. **`DATA.PSP`, `STARTDAT`, `OPNSSMP`** — §3.6, still open.
+What is left:
+
+1. **The LZRC encoder.** Decompression is implemented and validated against
+   Sony's own archives; compression is not, so every block is stored raw. The
+   archive is valid and reads back correctly, and about a third larger than
+   Sony ships. This is a size optimisation, not a correctness gap.
+2. **A hardware boot test.** Format correctness and acceptance by the PSP's
+   loader are separate claims. The MG path was settled by booting it; this one
+   has not been. Until then the honest statement is that the output agrees with
+   a reference whose output the PSP is known to accept.
+3. **Supplied version keys.** Building is wired for fixed-key titles.
+   Supplied-key content needs a `KEYS.BIN` that is tied to the buying account.
+4. **`STARTDAT` and `OPNSSMP`** — optional inputs, §3.6, still open.
 
 Not on this list any more: a retail Sony EG EBOOT, which was the standing
 blocker for most of this work. Four are now on hand and the comparison has been

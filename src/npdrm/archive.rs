@@ -183,12 +183,15 @@ where
     out.seek(SeekFrom::Start(start))?;
     out.write_all(&header)?;
     out.write_all(&table)?;
-    out.seek(SeekFrom::Start(offset))?;
+
+    // `offset` counts from the archive's own start, which is what the block
+    // table records; the sink may be positioned anywhere in a larger file.
+    out.seek(SeekFrom::Start(start + offset))?;
     out.flush()?;
 
     Ok(ArchiveSummary {
         layout,
-        size: offset - start,
+        size: offset,
         header_key,
         data_key,
     })
@@ -436,6 +439,42 @@ mod tests {
         // Both still read back to the same image.
         let version_key = options.resolve_version_key().unwrap();
         assert_eq!(read_back(&a, &version_key), read_back(&b, &version_key));
+    }
+
+    /// Writing into the middle of a larger file must work.
+    ///
+    /// The block table records offsets from the archive's own start, not from
+    /// the file's, and conflating the two is invisible whenever the archive
+    /// happens to begin at zero — which every other test here does. An EG
+    /// container puts the archive after a PBP header, so this is the case that
+    /// actually ships.
+    #[test]
+    fn an_archive_can_be_written_at_a_non_zero_offset() {
+        const PREFIX: usize = 0x123;
+        let original = image(32768 * 2 + 40);
+        let options = ArchiveOptions::fixed_key(CONTENT_ID);
+
+        let mut out = Cursor::new(vec![0xEEu8; PREFIX]);
+        out.set_position(PREFIX as u64);
+        let summary = write_archive(
+            &mut Cursor::new(original.clone()),
+            original.len() as u64,
+            &mut out,
+            &options,
+            &mut PredictableEntropy::new(0x11),
+        )
+        .unwrap();
+
+        let bytes = out.into_inner();
+        // The prefix is untouched, and the file ends where the archive does.
+        assert!(bytes[..PREFIX].iter().all(|&b| b == 0xEE));
+        assert_eq!(bytes.len() as u64, PREFIX as u64 + summary.size);
+        assert_eq!(&bytes[PREFIX..PREFIX + 8], b"NPUMDIMG");
+
+        // And it reads back, with offsets interpreted the archive's way.
+        let version_key = options.resolve_version_key().unwrap();
+        let recovered = read_back(&bytes[PREFIX..], &version_key);
+        assert_eq!(&recovered[..original.len()], &original[..]);
     }
 
     #[test]

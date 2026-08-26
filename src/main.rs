@@ -142,14 +142,46 @@ fn run(cli: &Cli) -> Result<(), Error> {
             write(&out_path, &built.data)
         }
 
-        Command::BuildEg { input, .. } => Err(Error::Unimplemented {
-            pipeline: "EG",
-            detail: format!(
-                "building an NPDRM EBOOT from {} needs the NPUMDIMG format, \
-                 which is not implemented yet; see docs/EG.md",
-                input.display()
-            ),
-        }),
+        Command::BuildEg {
+            input,
+            output,
+            content_id,
+        } => {
+            let output = output
+                .clone()
+                .unwrap_or_else(|| input.with_file_name("EBOOT.PBP"));
+
+            let image = std::fs::File::open(input).map_err(|e| Error::io(input, e))?;
+            let image_size = image.metadata().map_err(|e| Error::io(input, e))?.len();
+            let mut out = std::fs::File::create(&output).map_err(|e| Error::io(&output, e))?;
+
+            let options = pspbuild::npdrm::ArchiveOptions::fixed_key(content_id.clone());
+            let built = pspbuild::eg::build_eg_eboot(
+                image,
+                image_size,
+                &mut out,
+                &options,
+                &mut pspbuild::npdrm::SystemEntropy,
+            )?;
+
+            if let Some(title) = &built.title {
+                println!("Title:               {title}");
+            }
+            println!("Content ID:          {}", built.content_id);
+            println!("Image size:          {image_size} bytes");
+            println!(
+                "Blocks:              {} of {} bytes, stored uncompressed",
+                built.archive.layout.blocks,
+                built.archive.layout.block_size()
+            );
+            println!("DATA.PSAR:           {} bytes", built.archive.size);
+            println!(
+                "Wrote {} ({} bytes)",
+                output.display(),
+                built.container_size + built.archive.size
+            );
+            Ok(())
+        }
 
         Command::Inspect { input } => {
             // A UMD runs to 1.8 GB and an EG EBOOT to over a gigabyte, so
