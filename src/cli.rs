@@ -94,6 +94,13 @@ pub enum Command {
         /// must match what the container will be distributed as.
         #[arg(long, value_name = "ID")]
         content_id: String,
+
+        /// Store every block uncompressed.
+        ///
+        /// Roughly triples the output. Useful for comparing against a
+        /// reference build that was made the same way.
+        #[arg(long)]
+        no_compress: bool,
     },
 
     /// Report what a file is and what it contains.

@@ -17,8 +17,9 @@ and `pspbuild build-eg` writes complete archives. Verified against real
 archives, Sony's included: a Sony archive reconstructs block for block into a
 UMD image that this crate's own ISO9660 reader parses, and an archive built
 from a retail disc matches the reference implementation's for that disc in
-every section offset and in total size. Not implemented: the LZRC *encoder*,
-so blocks are stored raw. See [EG.md](EG.md).
+every section offset and in total size. Compression is implemented in both
+directions and reaches the same ratio as Sony's on their own blocks. See
+[EG.md](EG.md).
 
 ## 1. Layout
 
@@ -400,16 +401,19 @@ compressed exactly when its table entry's `size` is less than `block_size`,
 which is the only place the fact is written down. (An earlier revision of this
 document attributed that role to `unk_2`; see §2.4 for why that is wrong.)
 
-`pspbuild` implements this section including LZRC decompression. Validated on
-`NPJH90232`: all 6,119 blocks decrypt, all 4,216 compressed ones expand to
-exactly 32,768 bytes, and the reassembled 191 MiB image parses as an ISO9660
-UMD whose `PSP_GAME/PARAM.SFO` names the same title as the archive's content
-ID.
+`pspbuild` implements this section in both directions. Decompression is
+validated on `NPJH90232`: all 6,119 blocks decrypt, all 4,216 compressed ones
+expand to exactly 32,768 bytes, and the reassembled 191 MiB image parses as an
+ISO9660 UMD whose `PSP_GAME/PARAM.SFO` names the same title as the archive's
+content ID.
 
-The **encoder** is not implemented, and does not need to be. Compression is
-per block and optional — a block stored raw is as valid as a compressed one,
-and the reference falls back to raw whenever compression saves less than 10%.
-An encoder makes archives smaller, not more correct.
+Compression reaches the same ratio as Sony's. Recompressing their own blocks
+with our encoder comes to **30.6%** of raw where they achieved 30.7%, and the
+result decodes back to the same bytes. That is despite a different strategy:
+the reference threads a 65280-byte sliding window with its own hash chains,
+while this keeps the whole block addressable. Only the decoder is pinned by the
+format, so an encoder is free to parse differently as long as the result
+decodes — which is the property the tests check.
 
 ## 7. Validated against Sony
 
@@ -444,10 +448,9 @@ appear identically in Sony's archives. Their *meaning* is still unknown.
 
 - Whether the zeroed body fields are required or merely conventional.
 - What `unk_8` = `0x1010` and `unk_40` = `0x01003FFE` mean.
-- **The LZRC encoder.** Decompression is implemented and validated against
-  Sony's own archives; compression is not. Archives can therefore be read but
-  would have to be written with every block stored raw, which is valid and
-  merely larger.
+- **Whether a compressed archive boots.** The uncompressed form is
+  hardware-confirmed; the compressed one has passed every check this crate can
+  make but has not been on a console.
 - **Supplied version keys.** Three of the four Sony archives use them. The key
   ships separately, in a `KEYS.BIN` tied to the account that bought the
   content, so those archives can be structurally validated and their

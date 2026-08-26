@@ -898,3 +898,71 @@ fn the_containers_data_psp_signature_verifies() {
         "DATA.PSP declares different np_flags from the archive"
     );
 }
+
+/// Recompress Sony's own blocks and check we hold up on both counts.
+///
+/// Real disc data is the only honest test of a compressor: synthetic input
+/// either compresses implausibly well or not at all. This decompresses genuine
+/// blocks, compresses them again with our encoder, and checks two things —
+/// that the result decodes back to the same bytes, and that it is not
+/// meaningfully larger than what Sony shipped for the same block.
+///
+/// The ratio matters because a correct-but-poor encoder would pass every
+/// round-trip test while making archives a third bigger, which was the whole
+/// reason for writing one.
+#[test]
+fn our_compression_matches_sonys_on_their_own_blocks() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+    let block_size = layout.block_size() as usize;
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+
+    let (mut theirs, mut ours, mut raw, mut sampled) = (0usize, 0usize, 0usize, 0usize);
+    for index in (0..layout.blocks).step_by(97) {
+        let entry =
+            BlockEntry::from_bytes(&table[index as usize * ENTRY_SIZE..]).expect("entry decodes");
+        let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+        decrypt_block(&mut block, &entry, &header_key, &version_key).expect("block decrypts");
+
+        let plain = if entry.size as usize == block_size {
+            block
+        } else {
+            lzrc::decompress(&block, block_size).expect("block decompresses")
+        };
+
+        let packed = lzrc::compress(&plain).expect("block compresses");
+        assert_eq!(
+            lzrc::decompress(&packed, block_size).expect("our output decodes"),
+            plain,
+            "block {index} did not survive our own round trip"
+        );
+
+        theirs += entry.size as usize;
+        ours += packed.len().min(block_size);
+        raw += block_size;
+        sampled += 1;
+    }
+
+    if sampled == 0 {
+        eprintln!("skipped: no blocks to sample");
+        return;
+    }
+    let pct = |n: usize| 100.0 * n as f64 / raw as f64;
+    eprintln!(
+        "  {sampled} blocks: sony {:.1}%, ours {:.1}% of raw",
+        pct(theirs),
+        pct(ours)
+    );
+
+    // Ours must be in the same league. A 10% allowance covers a different
+    // match-finding strategy without letting a genuinely bad encoder through.
+    assert!(
+        ours <= theirs + theirs / 10,
+        "our compression is materially worse than Sony's: {ours} vs {theirs} bytes"
+    );
+}

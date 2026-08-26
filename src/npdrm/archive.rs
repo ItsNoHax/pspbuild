@@ -27,12 +27,16 @@
 //! table is kept, at 0x20 bytes per 32 KiB of image — about a megabyte for a
 //! full disc.
 //!
-//! # Blocks are stored raw
+//! # Compression
 //!
-//! Only the LZRC decoder is implemented, so nothing here compresses. Sony's
-//! archives are typically 60–70% of this size. A raw archive is valid and the
-//! firmware reads both — a block is compressed exactly when its table entry is
-//! smaller than a full block, and none of these are.
+//! Each block is compressed independently and kept compressed only when it
+//! saves at least [`RATIO_LIMIT`]; otherwise it is stored raw. That is the
+//! reference implementation's rule, and it is why a real archive mixes the two
+//! freely. Nothing in the header records which a block is — a block is
+//! compressed exactly when its table entry is smaller than a full block.
+//!
+//! Compression can be turned off with [`ArchiveOptions::compress`], which
+//! makes the output directly comparable with an uncompressed reference build.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -40,6 +44,7 @@ use crate::crypto::aes::Key;
 use crate::error::{Error, Result};
 use crate::npdrm::blocks::{BlockLayout, data_key, encrypt_block};
 use crate::npdrm::fixed_key::{FIXED_KEY_FLAG, fixed_key};
+use crate::npdrm::lzrc;
 use crate::npdrm::npumdimg::{CONTENT_ID_SIZE, HEADER_SIZE, HeaderFields, build_header};
 use crate::npdrm::random::Entropy;
 use crate::npdrm::table::ENTRY_SIZE;
@@ -50,6 +55,10 @@ pub const NP_FLAGS_FIXED_KEY: u32 = 0x0100_0003;
 
 /// Sectors per block. Every archive observed uses this.
 pub const DEFAULT_BLOCK_BASIS: u32 = 0x10;
+
+/// A compressed block is kept only if it comes to less than this percentage of
+/// a full one. Below the threshold the decode cost is not worth the space.
+pub const RATIO_LIMIT: usize = 90;
 
 /// How to build an archive.
 #[derive(Debug, Clone)]
@@ -63,6 +72,8 @@ pub struct ArchiveOptions {
     /// The version key. Required unless `np_flags` requests a fixed key, in
     /// which case it is derived and this must be `None`.
     pub version_key: Option<Key>,
+    /// Compress blocks that benefit from it. Sony's archives do.
+    pub compress: bool,
 }
 
 impl ArchiveOptions {
@@ -73,6 +84,7 @@ impl ArchiveOptions {
             np_flags: NP_FLAGS_FIXED_KEY,
             block_basis: DEFAULT_BLOCK_BASIS,
             version_key: None,
+            compress: true,
         }
     }
 
@@ -103,6 +115,8 @@ pub struct ArchiveSummary {
     pub header_key: Key,
     /// The MAC over the finished block table.
     pub data_key: Key,
+    /// How many blocks were stored compressed rather than raw.
+    pub compressed_blocks: u32,
 }
 
 /// Write a `DATA.PSAR` for `image` into `out`.
@@ -145,6 +159,7 @@ where
     let mut buffer = vec![0u8; block_size];
     let mut offset = layout.data_offset();
     let mut remaining = image_size;
+    let mut compressed_blocks = 0u32;
 
     for index in 0..layout.blocks {
         // The final block is short and is zero-padded out to a whole block.
@@ -154,9 +169,26 @@ where
         buffer[take..].fill(0);
         remaining -= take as u64;
 
-        let entry = encrypt_block(&mut buffer, offset, &header_key, &version_key)
+        // Compress, and keep the result only if it earns its place. The
+        // encrypted length must stay a multiple of 16, so a compressed block
+        // is padded up to one.
+        let mut payload = if options.compress {
+            let packed = lzrc::compress(&buffer)?;
+            if packed.len() * 100 / block_size < RATIO_LIMIT {
+                compressed_blocks += 1;
+                let mut padded = packed;
+                padded.resize(padded.len().next_multiple_of(16), 0);
+                padded
+            } else {
+                buffer.clone()
+            }
+        } else {
+            buffer.clone()
+        };
+
+        let entry = encrypt_block(&mut payload, offset, &header_key, &version_key)
             .map_err(|e| Error::Crypto(format!("block {index}: {e}")))?;
-        out.write_all(&buffer)?;
+        out.write_all(&payload)?;
 
         table.extend_from_slice(&entry.to_bytes());
         offset += u64::from(entry.size);
@@ -194,6 +226,7 @@ where
         size: offset,
         header_key,
         data_key,
+        compressed_blocks,
     })
 }
 
@@ -227,8 +260,19 @@ mod tests {
             .collect()
     }
 
+    /// Build with compression on, as a real archive would be.
     fn build(image_bytes: &[u8]) -> (Vec<u8>, ArchiveSummary, Key) {
-        let options = ArchiveOptions::fixed_key(CONTENT_ID);
+        build_with(image_bytes, true)
+    }
+
+    /// Build with compression off, so sizes are exactly predictable.
+    fn build_raw(image_bytes: &[u8]) -> (Vec<u8>, ArchiveSummary, Key) {
+        build_with(image_bytes, false)
+    }
+
+    fn build_with(image_bytes: &[u8], compress: bool) -> (Vec<u8>, ArchiveSummary, Key) {
+        let mut options = ArchiveOptions::fixed_key(CONTENT_ID);
+        options.compress = compress;
         let version_key = options.resolve_version_key().unwrap();
         let mut out = Cursor::new(Vec::new());
         let summary = write_archive(
@@ -254,13 +298,22 @@ mod tests {
         let block_basis = u32::from_le_bytes(header[0x0C..0x10].try_into().unwrap());
         let blocks = (u64::from(lba_end) + 1) / u64::from(block_basis);
 
+        let block_size = (block_basis * 2048) as usize;
         let mut image = Vec::new();
         for index in 0..blocks as usize {
             let entry =
                 BlockEntry::from_bytes(&archive[HEADER_SIZE + index * ENTRY_SIZE..]).unwrap();
             let mut block = archive[entry.offset as usize..][..entry.size as usize].to_vec();
             decrypt_block(&mut block, &entry, &header_key, version_key).unwrap();
-            image.extend_from_slice(&block);
+
+            // A block is compressed exactly when its entry is shorter than a
+            // full block; nothing in the header records it.
+            let plain = if entry.size as usize == block_size {
+                block
+            } else {
+                crate::npdrm::lzrc::decompress(&block, block_size).unwrap()
+            };
+            image.extend_from_slice(&plain);
         }
         image
     }
@@ -270,7 +323,7 @@ mod tests {
         // Sizes either side of a block boundary, so padding is exercised.
         for size in [1usize, 1000, 32768, 32769, 32768 * 3, 32768 * 3 + 17] {
             let original = image(size);
-            let (archive, summary, version_key) = build(&original);
+            let (archive, summary, version_key) = build_raw(&original);
 
             assert_eq!(archive.len() as u64, summary.size);
             assert_eq!(archive.len() as u64, summary.layout.archive_size());
@@ -306,7 +359,7 @@ mod tests {
     /// end — the same property real archives were checked for.
     #[test]
     fn the_table_maps_the_archive_without_gaps() {
-        let (archive, summary, _) = build(&image(32768 * 5 + 99));
+        let (archive, summary, _) = build_raw(&image(32768 * 5 + 99));
         let layout = summary.layout;
 
         let mut expected = layout.data_offset();
@@ -477,10 +530,81 @@ mod tests {
         assert_eq!(&recovered[..original.len()], &original[..]);
     }
 
+    /// Compression has to be doing something, and the result has to read back.
+    ///
+    /// A compressor that silently fell back to raw for every block would pass
+    /// every round-trip test in this file, so the size is asserted too.
+    #[test]
+    fn compression_shrinks_the_archive_and_still_reads_back() {
+        let original = image(32768 * 6 + 11);
+
+        let (raw, raw_summary, version_key) = build_raw(&original);
+        let (packed, packed_summary, _) = build(&original);
+
+        assert_eq!(raw_summary.compressed_blocks, 0);
+        assert_eq!(
+            packed_summary.compressed_blocks, packed_summary.layout.blocks,
+            "this input should compress in every block"
+        );
+        assert!(
+            packed.len() < raw.len() / 2,
+            "compressed archive is {} bytes against {} raw",
+            packed.len(),
+            raw.len()
+        );
+
+        // Both forms recover the same image.
+        assert_eq!(
+            read_back(&packed, &version_key),
+            read_back(&raw, &version_key)
+        );
+        assert_eq!(
+            &read_back(&packed, &version_key)[..original.len()],
+            &original[..]
+        );
+
+        // The header still authenticates over the compressed body.
+        assert!(verify_header(&packed[..HEADER_SIZE]).unwrap());
+        let table_size = packed_summary.layout.table_size() as usize;
+        assert_eq!(
+            data_key(&packed[HEADER_SIZE..HEADER_SIZE + table_size], &version_key).unwrap(),
+            packed_summary.data_key
+        );
+    }
+
+    /// Incompressible blocks must be stored raw rather than stored larger.
+    #[test]
+    fn incompressible_blocks_fall_back_to_raw() {
+        // A deterministic xorshift, which genuinely does not compress — a
+        // multiplicative counter looks random but is not, and LZRC finds it.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let noise: Vec<u8> = (0..32768 * 2)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        let (archive, summary, version_key) = build(&noise);
+
+        assert_eq!(
+            summary.compressed_blocks, 0,
+            "noise should not have been kept compressed"
+        );
+        assert_eq!(archive.len() as u64, summary.layout.archive_size());
+        assert_eq!(
+            &read_back(&archive, &version_key)[..noise.len()],
+            &noise[..]
+        );
+    }
+
+    /// The size helpers describe an uncompressed build, which is the only
+    /// case where the total is predictable without doing the work.
     #[test]
     fn the_size_helpers_agree_with_what_is_written() {
         let original = image(32768 * 3 + 5);
-        let (archive, summary, _) = build(&original);
+        let (archive, summary, _) = build_raw(&original);
         assert_eq!(
             archive_size_for(original.len() as u64, DEFAULT_BLOCK_BASIS).unwrap(),
             archive.len() as u64

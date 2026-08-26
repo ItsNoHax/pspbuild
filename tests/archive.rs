@@ -67,11 +67,22 @@ fn find_iso() -> Option<PathBuf> {
 
 /// Build an archive from the available ISO into a temporary file.
 fn build() -> Option<(tempfile::NamedTempFile, u64, Key)> {
+    build_with(true)
+}
+
+/// The reference in `plans/` was generated without compression, so a
+/// structural comparison against it has to be made like for like.
+fn build_uncompressed() -> Option<(tempfile::NamedTempFile, u64, Key)> {
+    build_with(false)
+}
+
+fn build_with(compress: bool) -> Option<(tempfile::NamedTempFile, u64, Key)> {
     let iso_path = find_iso()?;
     let mut iso = std::fs::File::open(&iso_path).ok()?;
     let iso_size = iso.metadata().ok()?.len();
 
-    let options = ArchiveOptions::fixed_key(CONTENT_ID);
+    let mut options = ArchiveOptions::fixed_key(CONTENT_ID);
+    options.compress = compress;
     let mut out = tempfile::NamedTempFile::new().ok()?;
     write_archive(
         &mut iso,
@@ -149,6 +160,13 @@ fn a_built_archive_reads_back_as_the_source_disc() {
         decrypt_block(&mut block, &entry, &header_key, &version_key)
             .unwrap_or_else(|e| panic!("block {index}: {e}"));
 
+        let block = if entry.size == block_size {
+            block
+        } else {
+            pspbuild::npdrm::lzrc::decompress(&block, block_size as usize)
+                .unwrap_or_else(|e| panic!("block {index}: {e}"))
+        };
+
         let start = u64::from(index) * u64::from(block_size);
         let len = (block.len() as u64).min(iso_size - start) as usize;
         let mut original = vec![0u8; len];
@@ -176,7 +194,7 @@ fn our_archive_agrees_with_the_reference_on_everything_derived_from_the_input() 
         eprintln!("skipped: point PSPBUILD_TEST_EG_PBP at a sign_np archive to compare");
         return;
     };
-    let Some((mut ours, _, version_key)) = build() else {
+    let Some((mut ours, _, version_key)) = build_uncompressed() else {
         eprintln!("skipped: no UMD image available");
         return;
     };

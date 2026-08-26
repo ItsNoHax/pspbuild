@@ -11,14 +11,14 @@ $ pspbuild build-eg game.iso --content-id UL0000-ULUS10380_00-0000000000000000
 Title:               LEGO® Batman™: The Videogame
 Content ID:          UL0000-ULUS10380_00-0000000000000000
 Image size:          1136689152 bytes
-Blocks:              34689 of 32768 bytes, stored uncompressed
-DATA.PSAR:           1137799456 bytes
-Wrote EBOOT.PBP (1138357792 bytes)
+Blocks:              34689 of 32768 bytes, 22934 (66%) compressed
+DATA.PSAR:           603135408 bytes
+Wrote EBOOT.PBP (603693744 bytes)
 ```
 
-For that disc the result matches `sign_np`'s byte for byte in every section
-offset and in total size; only the values the format requires to be random
-differ. The format itself was checked against four genuine Sony Store archives,
+Built with `--no-compress`, the result matches `sign_np`'s byte for byte in
+every section offset and in total size; only the values the format requires to
+be random differ. The format itself was checked against four genuine Sony Store archives,
 not just against `sign_np` — see §1.
 
 A container built this way **boots on a retail PSP Slim running official
@@ -28,8 +28,12 @@ merely permitting — see [COMPATIBILITY.md §1.1](COMPATIBILITY.md). Official
 firmware matters here: most custom firmwares relax the very checks this
 exercises.
 
-What is left is listed in §4. The largest item is the LZRC *encoder*, whose
-absence makes archives about a third larger than Sony's rather than wrong.
+Blocks are compressed by default, at the same ratio Sony achieves — the LEGO
+Batman disc comes to 604 MB against 1.14 GB stored raw. `--no-compress` turns
+it off, which is what makes output comparable with an uncompressed reference
+build.
+
+What is left is listed in §4.
 
 ## 1. What was needed, and what is in hand
 
@@ -283,10 +287,9 @@ being the values the format requires to be random.
 
 What is left:
 
-1. **The LZRC encoder.** Decompression is implemented and validated against
-   Sony's own archives; compression is not, so every block is stored raw. The
-   archive is valid and reads back correctly, and about a third larger than
-   Sony ships. This is a size optimisation, not a correctness gap.
+1. **A boot test for the compressed form.** The archive that booted was built
+   uncompressed. The compressed one passes every check this crate can make,
+   including rebuilding the whole image, but has not been on a console.
 2. **Wider hardware coverage.** One console, one firmware revision, one disc.
    The signature path is measured — a corrupted container is refused on the
    same console, see [COMPATIBILITY.md §1.1](COMPATIBILITY.md) — but nothing

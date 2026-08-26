@@ -146,6 +146,7 @@ fn run(cli: &Cli) -> Result<(), Error> {
             input,
             output,
             content_id,
+            no_compress,
         } => {
             let output = output
                 .clone()
@@ -155,7 +156,8 @@ fn run(cli: &Cli) -> Result<(), Error> {
             let image_size = image.metadata().map_err(|e| Error::io(input, e))?.len();
             let mut out = std::fs::File::create(&output).map_err(|e| Error::io(&output, e))?;
 
-            let options = pspbuild::npdrm::ArchiveOptions::fixed_key(content_id.clone());
+            let mut options = pspbuild::npdrm::ArchiveOptions::fixed_key(content_id.clone());
+            options.compress = !no_compress;
             let built = pspbuild::eg::build_eg_eboot(
                 image,
                 image_size,
@@ -169,10 +171,16 @@ fn run(cli: &Cli) -> Result<(), Error> {
             }
             println!("Content ID:          {}", built.content_id);
             println!("Image size:          {image_size} bytes");
+            let blocks = built.archive.layout.blocks;
+            let packed = built.archive.compressed_blocks;
             println!(
-                "Blocks:              {} of {} bytes, stored uncompressed",
-                built.archive.layout.blocks,
-                built.archive.layout.block_size()
+                "Blocks:              {blocks} of {} bytes, {} compressed",
+                built.archive.layout.block_size(),
+                if packed == 0 {
+                    "none".to_string()
+                } else {
+                    format!("{packed} ({}%)", packed * 100 / blocks)
+                }
             );
             println!("DATA.PSAR:           {} bytes", built.archive.size);
             println!(
