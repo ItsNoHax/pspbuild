@@ -49,6 +49,12 @@ signature was corrupted and the same console asked again:
 | --- | --- |
 | as built | boots, game runs |
 | one byte flipped at `DATA.PSAR + 0xD8` | **refused — `80010087`** |
+| that byte flipped back | boots again |
+
+The third row matters as much as the second. Restoring the bit restores the
+behaviour, and `cmp` confirms the restored file is byte-identical to the one
+that first booted — so the refusal was caused by the flip and not by anything
+else that happened to the memory stick along the way.
 
 The two differ by a single bit in the ECDSA signature and by nothing else:
 this crate's own verifier reports the archive signature invalid and the header
