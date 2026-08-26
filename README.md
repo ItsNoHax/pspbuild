@@ -164,11 +164,12 @@ two are genuinely different pipelines rather than options on one.
 
 - **MG** — memory-stick games, i.e. homebrew. `DATA.PSP` is an encrypted PRX and
   there is no signature anywhere in the chain. **Implemented.**
-- **EG** — downloaded games. `DATA.PSP` is an NPDRM container and `DATA.PSAR`
-  holds an `NPUMDIMG` encrypted ISO. **Not implemented**; `build-eg` says so
-  rather than guessing. The ISO reader it needs is done and validated against a
-  retail UMD, but the NPUMDIMG format cannot be pinned down without a known-good
-  EG EBOOT to check against. See [docs/EG.md](docs/EG.md).
+- **EG** — downloaded games. `DATA.PSP` is a signed NPDRM licence stub and
+  `DATA.PSAR` holds an `NPUMDIMG` encrypted ISO. **Implemented**: `build-eg`
+  turns a UMD image into a signed container, compressed by default, and it
+  boots on official firmware. The format was checked against four genuine Sony
+  Store archives rather than only against a reimplementation. See
+  [docs/EG.md](docs/EG.md).
 
 `pspbuild` refuses to run one pipeline against a container that asks for the
 other, and never silently falls back between them.
@@ -187,8 +188,8 @@ other, and never silently falls back between them.
   encrypted module without it. Isolated on hardware one field at a time, so
   everything else is derived from the input. What the bit means is not known —
   see [docs/FORMAT.md](docs/FORMAT.md#8-the-one-field-the-firmware-insists-on).
-- **Tested on one console.** A PSP Slim on official firmware. Other models and
-  firmware revisions are unverified.
+- **Tested on one console.** A PSP Slim on official firmware, MG and EG alike.
+  Other models and firmware revisions are unverified.
 - **One tag.** Only `0xADF305F0` (the 2.80 demo scheme) is emitted. This is the
   scheme the legacy templates used, and the one whose header carries no
   signature.

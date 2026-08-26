@@ -188,7 +188,8 @@ necessary and not sufficient; only a boot test settles it.
 - **At most four segments**, which is what a `~PSP` header can describe.
 - **PSPemu/PBOOT is not implemented.** `--format pspemu` fails with a clear
   message rather than producing something untested.
-- **The EG path is not implemented.** `build-eg` fails with a clear message.
+- **Supplied version keys are not supported.** Building targets fixed-key
+  titles; a Store purchase's key ships in a `KEYS.BIN` tied to the account.
   See [EG.md](EG.md).
 
 ## 6. Test coverage
