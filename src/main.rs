@@ -36,12 +36,10 @@ fn run(cli: &Cli) -> Result<(), Error> {
             input,
             output,
             no_compress,
-            format,
         } => {
             let data = read(input)?;
             let options = EncryptOptions {
                 compress: !no_compress,
-                format: (*format).into(),
             };
 
             let encrypted = encrypt_prx(&data, &options)?;

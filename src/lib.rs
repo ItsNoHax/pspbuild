@@ -45,23 +45,11 @@ use crate::prx::parser::{ModuleInfo, parse_module};
 use crate::psp::header::{METADATA_SIZE, PSP_HEADER_SIZE, PspModuleHeader};
 use crate::psp::tag::{self, TAG_DEMO_280};
 
-/// Output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Format {
-    /// A standard encrypted PSP PRX.
-    #[default]
-    Psp,
-    /// The PSPemu/PBOOT variant. Not implemented yet.
-    PspEmu,
-}
-
 /// Options controlling encryption.
 #[derive(Debug, Clone)]
 pub struct EncryptOptions {
     /// Compress the payload with gzip before encrypting.
     pub compress: bool,
-    /// Output format.
-    pub format: Format,
 }
 
 impl Default for EncryptOptions {
@@ -70,7 +58,6 @@ impl Default for EncryptOptions {
             // The reference implementation compresses for all but its largest
             // template, and compression only shrinks the result.
             compress: true,
-            format: Format::Psp,
         }
     }
 }
@@ -104,12 +91,6 @@ pub struct Encrypted {
 
 /// Encrypt a PSP module.
 pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> {
-    if options.format == Format::PspEmu {
-        return Err(Error::UnsupportedPspEmu(
-            "the PSPemu/PBOOT format is not implemented yet".into(),
-        ));
-    }
-
     // An EBOOT.PBP carries the module in its DATA.PSP section. Encrypt that
     // section and hand back a rebuilt container, so homebrew can be encrypted
     // in the form it actually ships in.
@@ -414,10 +395,7 @@ mod tests {
     #[test]
     fn round_trips_without_compression() {
         let elf = synthetic_prx("no_compress", 4096);
-        let options = EncryptOptions {
-            compress: false,
-            ..Default::default()
-        };
+        let options = EncryptOptions { compress: false };
         let enc = encrypt_prx(&elf, &options).unwrap();
         assert!(!enc.compressed);
         assert_eq!(enc.payload_size as usize, elf.len());
@@ -512,19 +490,6 @@ mod tests {
     }
 
     #[test]
-    fn pspemu_format_is_rejected_cleanly() {
-        let elf = synthetic_prx("m", 512);
-        let options = EncryptOptions {
-            format: Format::PspEmu,
-            ..Default::default()
-        };
-        assert!(matches!(
-            encrypt_prx(&elf, &options).unwrap_err(),
-            Error::UnsupportedPspEmu(_)
-        ));
-    }
-
-    #[test]
     fn pbp_containers_are_encrypted_in_place() {
         use crate::pbp::Pbp;
 
@@ -575,10 +540,7 @@ mod tests {
     #[test]
     fn output_size_helper_agrees_with_reality() {
         let elf = synthetic_prx("sizes", 1024);
-        let options = EncryptOptions {
-            compress: false,
-            ..Default::default()
-        };
+        let options = EncryptOptions { compress: false };
         let enc = encrypt_prx(&elf, &options).unwrap();
         assert_eq!(output_size_for(elf.len() as u64), enc.data.len() as u64);
     }

@@ -101,7 +101,6 @@ pub fn build_mg_eboot(request: &MgEbootRequest<'_>) -> Result<MgEboot> {
             request.module,
             &EncryptOptions {
                 compress: request.compress,
-                ..Default::default()
             },
         )?;
         (out.data.clone(), Some(out))

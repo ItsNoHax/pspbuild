@@ -256,8 +256,11 @@ fn garbage_input_fails_without_panicking() {
     assert!(!stderr.contains("panicked"), "tool panicked: {stderr}");
 }
 
+/// A flag that no longer exists must be rejected rather than ignored, so a
+/// script still passing it fails loudly instead of silently building something
+/// other than what it asked for.
 #[test]
-fn pspemu_format_reports_that_it_is_unimplemented() {
+fn the_removed_format_flag_is_refused() {
     let dir = TempDir::new().unwrap();
     let input = fixture(&dir, "game.prx", 1024);
 
@@ -265,7 +268,7 @@ fn pspemu_format_reports_that_it_is_unimplemented() {
         .args(["encrypt", input.to_str().unwrap(), "--format", "pspemu"])
         .assert()
         .failure()
-        .stderr(contains("PSPemu"));
+        .stderr(contains("--format"));
 }
 
 #[test]

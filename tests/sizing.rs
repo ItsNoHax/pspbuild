@@ -6,10 +6,7 @@ use common::{PSP_HEADER_SIZE, make_prx, make_prx_with};
 use pspbuild::{EncryptOptions, decrypt_prx, encrypt_prx, output_size_for, verify_prx};
 
 fn no_compress() -> EncryptOptions {
-    EncryptOptions {
-        compress: false,
-        ..Default::default()
-    }
+    EncryptOptions { compress: false }
 }
 
 /// The fixture sizes called out in the implementation plan.

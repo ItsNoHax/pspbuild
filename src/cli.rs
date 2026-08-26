@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 /// Build, encrypt and inspect PSP EBOOTs.
 #[derive(Debug, Parser)]
@@ -31,10 +31,6 @@ pub enum Command {
         /// Do not gzip the payload before encrypting.
         #[arg(long)]
         no_compress: bool,
-
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = FormatArg::Psp)]
-        format: FormatArg,
     },
 
     /// Build an MG EBOOT.PBP (homebrew) from a module.
@@ -148,23 +144,6 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum FormatArg {
-    /// Standard encrypted PSP PRX.
-    Psp,
-    /// PSPemu/PBOOT variant (not implemented yet).
-    Pspemu,
-}
-
-impl From<FormatArg> for pspbuild::Format {
-    fn from(value: FormatArg) -> Self {
-        match value {
-            FormatArg::Psp => pspbuild::Format::Psp,
-            FormatArg::Pspemu => pspbuild::Format::PspEmu,
-        }
-    }
-}
-
 /// Derive an output path by replacing the extension, e.g. `foo.prx` becomes
 /// `foo.enc.prx`.
 pub fn derive_output_path(input: &Path, infix: &str) -> PathBuf {
@@ -236,9 +215,6 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx", "a.prx", "--no-compress"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["pspbuild", "encrypt-prx", "a.prx", "--format", "pspemu"]).is_ok()
-        );
 
         // Missing operands must fail rather than default to something.
         assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx"]).is_err());

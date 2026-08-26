@@ -12,13 +12,7 @@ use pspbuild::{
 /// Run every public entry point over `data`; none may panic.
 fn exercise_all(data: &[u8]) {
     let _ = encrypt_prx(data, &EncryptOptions::default());
-    let _ = encrypt_prx(
-        data,
-        &EncryptOptions {
-            compress: false,
-            ..Default::default()
-        },
-    );
+    let _ = encrypt_prx(data, &EncryptOptions { compress: false });
     let _ = inspect_prx(data);
     let _ = verify_prx(data);
     let _ = decrypt_prx(data);
@@ -139,10 +133,7 @@ proptest! {
     #[test]
     fn output_size_is_predictable(payload_len in 1usize..8192) {
         let prx = make_prx("prop", payload_len);
-        let enc = encrypt_prx(&prx, &EncryptOptions {
-            compress: false,
-            ..Default::default()
-        }).unwrap();
+        let enc = encrypt_prx(&prx, &EncryptOptions { compress: false }).unwrap();
 
         prop_assert_eq!(enc.data.len() as u64, output_size_for(prx.len() as u64));
         prop_assert_eq!(
@@ -155,7 +146,7 @@ proptest! {
     #[test]
     fn round_trip_is_lossless(payload_len in 1usize..4096, compress in any::<bool>()) {
         let prx = make_prx("prop_round", payload_len);
-        let enc = encrypt_prx(&prx, &EncryptOptions { compress, ..Default::default() }).unwrap();
+        let enc = encrypt_prx(&prx, &EncryptOptions { compress }).unwrap();
         prop_assert_eq!(decrypt_prx(&enc.data).unwrap(), prx);
     }
 }

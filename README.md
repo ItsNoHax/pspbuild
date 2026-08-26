@@ -193,8 +193,6 @@ other, and never silently falls back between them.
 - **One tag.** Only `0xADF305F0` (the 2.80 demo scheme) is emitted. This is the
   scheme the legacy templates used, and the one whose header carries no
   signature.
-- **PSPemu/PBOOT is not implemented.** `--format pspemu` fails with a clear
-  message rather than producing something untested.
 - **At most four segments**, which is what a `~PSP` header can describe.
 
 ## Development

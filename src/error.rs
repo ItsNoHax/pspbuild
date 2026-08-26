@@ -28,9 +28,6 @@ pub enum Error {
     #[error("cryptographic operation failed: {0}")]
     Crypto(String),
 
-    #[error("unsupported PSPemu/PBOOT format: {0}")]
-    UnsupportedPspEmu(String),
-
     #[error("invalid PBP container: {0}")]
     InvalidPbp(String),
 

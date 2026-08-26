@@ -186,8 +186,10 @@ necessary and not sufficient; only a boot test settles it.
 
 - **One tag.** Only `0xADF305F0` is emitted. See [KEYS.md §2](KEYS.md).
 - **At most four segments**, which is what a `~PSP` header can describe.
-- **PSPemu/PBOOT is not implemented.** `--format pspemu` fails with a clear
-  message rather than producing something untested.
+- **PSPemu/PBOOT is out of scope.** It was a placeholder in the initial import
+  with no specification behind it, and has been removed rather than left as a
+  flag that only ever failed. Implementing it would need a `PBOOT.PBP` to
+  characterise, the tag it uses, and a PS3 to test on — a PSP will not run one.
 - **Supplied version keys are not supported.** Building targets fixed-key
   titles; a Store purchase's key ships in a `KEYS.BIN` tied to the account.
   See [EG.md](EG.md).

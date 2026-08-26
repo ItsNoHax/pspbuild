@@ -168,14 +168,7 @@ fn none_of_the_available_fixtures_are_eg() {
 fn our_header_matches_sony_on_every_field_the_loader_derives_from_the_elf() {
     for_each_sony(|f| {
         let module = decrypt_prx(&f.eboot).unwrap_or_else(|e| panic!("{}: {e}", f.name));
-        let ours = encrypt_prx(
-            &module,
-            &EncryptOptions {
-                compress: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let ours = encrypt_prx(&module, &EncryptOptions { compress: false }).unwrap();
 
         let sony = f.header();
         let mine = PspModuleHeader::parse(&ours.data).unwrap();
@@ -308,14 +301,7 @@ fn sonys_bss_size_is_the_negated_relocation_size() {
         );
 
         // And what this crate writes instead: the actual bss.
-        let ours = encrypt_prx(
-            &module,
-            &EncryptOptions {
-                compress: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let ours = encrypt_prx(&module, &EncryptOptions { compress: false }).unwrap();
         let expected: u32 = segs
             .iter()
             .filter(|s| s.kind == PT_LOAD)
