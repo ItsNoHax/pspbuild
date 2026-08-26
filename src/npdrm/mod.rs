@@ -25,9 +25,11 @@
 //!
 //! [`NPUMDIMG`]: https://github.com/ItsNoHax/pspbuild/blob/main/docs/NPUMDIMG.md
 
+pub mod archive;
 pub mod bbcipher;
 pub mod bbmac;
 pub mod blocks;
+pub mod data_psp;
 pub mod ecdsa;
 pub mod fixed_key;
 pub mod keys;
@@ -39,6 +41,7 @@ pub mod table;
 #[cfg(test)]
 mod test_vectors;
 
+pub use archive::{ArchiveOptions, ArchiveSummary, write_archive};
 pub use bbcipher::{BbCipher, bbcipher};
 pub use bbmac::{BbMac, BbMacType, bbmac};
 pub use blocks::{BlockLayout, decrypt_block, encrypt_block};

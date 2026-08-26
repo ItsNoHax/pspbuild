@@ -1,14 +1,18 @@
-//! The NPUMDIMG header's signature.
+//! The NPUMDIMG header: building it, and signing it.
 //!
-//! See `docs/NPUMDIMG.md` for the format. This module covers step 5 and 6 of
-//! the header crypto chain — the digest and the signature over it — which are
-//! the last two steps and the only ones that need the archive's *finished*
-//! header rather than its parts.
+//! See `docs/NPUMDIMG.md` for the format. [`build_header`] runs the whole
+//! chain of its §3 — assemble, encrypt the body, MAC, digest, sign — and the
+//! functions below it cover the individual steps.
 
+use crate::crypto::aes::Key;
 use crate::crypto::sha1::{Digest160, sha1};
 use crate::error::{Error, Result};
+use crate::npdrm::bbcipher::bbcipher;
+use crate::npdrm::bbmac::{BbMacType, bbmac};
+use crate::npdrm::blocks::{BlockLayout, SECTOR_SIZE};
 use crate::npdrm::ecdsa::{self, Signature};
 use crate::npdrm::keys::{NPUMDIMG_PRIVATE_KEY, NPUMDIMG_PUBLIC_KEY};
+use crate::npdrm::random::PADDING_SIZE;
 
 /// The NPUMDIMG header, in bytes.
 pub const HEADER_SIZE: usize = 0x100;
@@ -18,6 +22,127 @@ pub const SIGNED_LEN: usize = 0xD8;
 
 /// Where the signature sits.
 pub const SIGNATURE_OFFSET: usize = 0xD8;
+
+/// The archive's magic.
+pub const MAGIC: &[u8; 8] = b"NPUMDIMG";
+
+/// The content ID field's width. Shorter IDs are NUL-padded.
+pub const CONTENT_ID_SIZE: usize = 0x30;
+
+/// The body, which is stored encrypted.
+const BODY: std::ops::Range<usize> = 0x40..0xA0;
+
+/// Where the header hash covers up to.
+const HASHED_LEN: usize = 0xC0;
+
+/// `unk_2` switches above a 1 GiB image. It is not a compression flag; see
+/// `docs/NPUMDIMG.md` §2.4.
+const LARGE_IMAGE_THRESHOLD: u64 = 0x4000_0000;
+
+/// Everything needed to build a header, other than the crypto.
+#[derive(Debug, Clone)]
+pub struct HeaderFields {
+    /// The content ID, at most [`CONTENT_ID_SIZE`] bytes of ASCII.
+    pub content_id: String,
+    /// `np_flags` verbatim: the fixed-key bit and the key variant.
+    pub np_flags: u32,
+    /// Where the blocks are and how many.
+    pub layout: BlockLayout,
+    /// The per-archive random key the blocks were encrypted under.
+    pub header_key: Key,
+    /// The MAC over the finished block table. A *result*, so the table must
+    /// already exist when this is called.
+    pub data_key: Key,
+    /// The eight random bytes at 0xD0.
+    pub padding: [u8; PADDING_SIZE],
+}
+
+/// Build a complete, signed 256-byte header.
+///
+/// The steps run in the order `docs/NPUMDIMG.md` §3 sets out, and the order
+/// matters: each one covers the output of the one before. The body is
+/// encrypted before the MAC is taken, so the MAC covers ciphertext; the MAC is
+/// written before the digest, so the signature covers the MAC.
+pub fn build_header(fields: &HeaderFields, version_key: &Key) -> Result<[u8; HEADER_SIZE]> {
+    let id = fields.content_id.as_bytes();
+    if id.len() > CONTENT_ID_SIZE {
+        return Err(Error::Crypto(format!(
+            "content ID is {} bytes, more than the {CONTENT_ID_SIZE} the field holds",
+            id.len()
+        )));
+    }
+    if !fields.content_id.is_ascii() {
+        return Err(Error::Crypto("content ID must be ASCII".into()));
+    }
+
+    let mut header = [0u8; HEADER_SIZE];
+    header[..8].copy_from_slice(MAGIC);
+    header[0x08..0x0C].copy_from_slice(&fields.np_flags.to_le_bytes());
+    header[0x0C..0x10].copy_from_slice(&fields.layout.block_basis.to_le_bytes());
+    header[0x10..0x10 + id.len()].copy_from_slice(id);
+
+    write_body(&mut header, fields)?;
+
+    header[0xA0..0xB0].copy_from_slice(&fields.header_key);
+    header[0xB0..0xC0].copy_from_slice(&fields.data_key);
+    // header_hash stays zero until the body is encrypted and MAC'd.
+    header[0xD0..0xD8].copy_from_slice(&fields.padding);
+
+    // Body first, so everything after covers its ciphertext.
+    bbcipher(&fields.header_key, version_key, 0, &mut header[BODY])?;
+
+    let hash = bbmac(BbMacType::Type3, &header[..HASHED_LEN], Some(version_key))?;
+    header[0xC0..0xD0].copy_from_slice(&hash);
+
+    sign_header(&mut header)?;
+    Ok(header)
+}
+
+/// Fill in the plaintext body at 0x40..0xA0.
+fn write_body(header: &mut [u8; HEADER_SIZE], fields: &HeaderFields) -> Result<()> {
+    let layout = fields.layout;
+    let body = &mut header[BODY];
+
+    let put16 = |body: &mut [u8], at: usize, v: u16| {
+        body[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    };
+    let put32 = |body: &mut [u8], at: usize, v: u32| {
+        body[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    };
+
+    put16(body, 0x00, SECTOR_SIZE as u16);
+    put16(
+        body,
+        0x02,
+        if layout.iso_size > LARGE_IMAGE_THRESHOLD {
+            0xE001
+        } else {
+            0xE000
+        },
+    );
+    put32(body, 0x08, 0x1010);
+    put32(body, 0x14, 0); // lba_start
+    put32(body, 0x1C, layout.nsectors());
+    put32(body, 0x24, layout.lba_end());
+    put32(body, 0x28, 0x0100_3FFE);
+    put32(body, 0x2C, HEADER_SIZE as u32); // block_entry_offset
+
+    // disc_id is rebuilt from the content ID rather than carried separately:
+    // characters 7..11, a dash, then 11..16.
+    let id = fields.content_id.as_bytes();
+    if id.len() >= 16 {
+        body[0x30..0x34].copy_from_slice(&id[7..11]);
+        body[0x34] = b'-';
+        body[0x35..0x3A].copy_from_slice(&id[11..16]);
+    } else {
+        return Err(Error::Crypto(format!(
+            "content ID {:?} is too short to contain a disc ID",
+            fields.content_id
+        )));
+    }
+
+    Ok(())
+}
 
 /// The digest the header's signature is made over.
 ///

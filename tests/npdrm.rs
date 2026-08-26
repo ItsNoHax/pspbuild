@@ -772,12 +772,12 @@ fn the_decompressed_image_is_this_archives_umd() {
 /// is not a real filesystem.
 ///
 /// It reconstructs hundreds of megabytes, so it is opt-in: set
-/// `PSPBUILD_TEST_RECONSTRUCT=1`. It is the strongest evidence the decoder is
+/// `PSPBUILD_TEST_SLOW=1`. It is the strongest evidence the decoder is
 /// correct and is worth running whenever LZRC changes.
 #[test]
 fn the_whole_image_reconstructs_and_parses() {
-    if std::env::var("PSPBUILD_TEST_RECONSTRUCT").is_err() {
-        eprintln!("skipped: set PSPBUILD_TEST_RECONSTRUCT=1 to rebuild the whole image");
+    if std::env::var("PSPBUILD_TEST_SLOW").is_err() {
+        eprintln!("skipped: set PSPBUILD_TEST_SLOW=1 to rebuild the whole image");
         return;
     }
 
@@ -831,5 +831,46 @@ fn the_whole_image_reconstructs_and_parses() {
     assert!(
         iso.exists("/PSP_GAME/SYSDIR/EBOOT.BIN"),
         "no bootable executable in the reconstructed image"
+    );
+}
+
+/// Sony's own `DATA.PSP` must verify under the published key.
+///
+/// This is a separate signature from the archive header's, over a different
+/// message — the container's `PARAM.SFO` followed by the content ID — so it
+/// confirms that reading independently of everything else. It needs no version
+/// key, so it works on supplied-key archives too.
+#[test]
+fn the_containers_data_psp_signature_verifies() {
+    let Some(path) = locate() else {
+        eprintln!("skipped: no EG EBOOT.PBP available");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("the container reads");
+    let pbp = pspbuild::pbp::Pbp::parse(&bytes).expect("it is a PBP");
+
+    let param_sfo = pbp.section(PbpSection::ParamSfo);
+    let data_psp = pbp.section(PbpSection::DataPsp);
+    if data_psp.len() < pspbuild::npdrm::data_psp::DATA_PSP_SIZE {
+        eprintln!("skipped: DATA.PSP is too small to be an EG licence stub");
+        return;
+    }
+
+    assert!(
+        pspbuild::npdrm::data_psp::verify(data_psp, param_sfo).unwrap(),
+        "the container's DATA.PSP signature does not verify"
+    );
+
+    // The content ID and flags it declares must agree with the archive's.
+    let header = read_npumdimg_header(&path).expect("the archive header reads");
+    assert_eq!(
+        pspbuild::npdrm::data_psp::content_id(data_psp).unwrap(),
+        content_id(&header),
+        "DATA.PSP names a different title from the archive"
+    );
+    assert_eq!(
+        pspbuild::npdrm::data_psp::np_flags(data_psp).unwrap(),
+        u32_at(&header, field::NP_FLAGS),
+        "DATA.PSP declares different np_flags from the archive"
     );
 }
