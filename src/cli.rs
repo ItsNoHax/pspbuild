@@ -101,6 +101,14 @@ pub enum Command {
         /// reference build that was made the same way.
         #[arg(long)]
         no_compress: bool,
+
+        /// PNG to show while the game loads.
+        #[arg(long, value_name = "FILE")]
+        startdat: Option<PathBuf>,
+
+        /// OPNSSMP.BIN module to carry, encrypted under the version key.
+        #[arg(long, value_name = "FILE")]
+        opnssmp: Option<PathBuf>,
     },
 
     /// Report what a file is and what it contains.

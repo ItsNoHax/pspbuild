@@ -74,6 +74,10 @@ pub struct ArchiveOptions {
     pub version_key: Option<Key>,
     /// Compress blocks that benefit from it. Sony's archives do.
     pub compress: bool,
+    /// A PNG to show while the game loads.
+    pub startdat: Option<Vec<u8>>,
+    /// An `OPNSSMP.BIN` module to carry, encrypted as a PGD.
+    pub opnssmp: Option<Vec<u8>>,
 }
 
 impl ArchiveOptions {
@@ -85,7 +89,15 @@ impl ArchiveOptions {
             block_basis: DEFAULT_BLOCK_BASIS,
             version_key: None,
             compress: true,
+            startdat: None,
+            opnssmp: None,
         }
+    }
+
+    /// The version key, for callers outside this module that need it — the
+    /// EG builder encrypts an `OPNSSMP` under the same key.
+    pub fn version_key_for_extras(&self) -> Result<Key> {
+        self.resolve_version_key()
     }
 
     /// Resolve the version key this archive will be built under.

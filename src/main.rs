@@ -147,6 +147,8 @@ fn run(cli: &Cli) -> Result<(), Error> {
             output,
             content_id,
             no_compress,
+            startdat,
+            opnssmp,
         } => {
             let output = output
                 .clone()
@@ -158,6 +160,8 @@ fn run(cli: &Cli) -> Result<(), Error> {
 
             let mut options = pspbuild::npdrm::ArchiveOptions::fixed_key(content_id.clone());
             options.compress = !no_compress;
+            options.startdat = read_optional(startdat.as_ref())?;
+            options.opnssmp = read_optional(opnssmp.as_ref())?;
             let built = pspbuild::eg::build_eg_eboot(
                 image,
                 image_size,
@@ -182,6 +186,15 @@ fn run(cli: &Cli) -> Result<(), Error> {
                     format!("{packed} ({}%)", packed * 100 / blocks)
                 }
             );
+            if built.startdat_size > 0 {
+                println!("STARTDAT:            {} byte PNG", built.startdat_size);
+            }
+            if built.opnssmp_size > 0 {
+                println!(
+                    "OPNSSMP:             {} bytes encrypted",
+                    built.opnssmp_size
+                );
+            }
             println!("DATA.PSAR:           {} bytes", built.archive.size);
             println!(
                 "Wrote {} ({} bytes)",
@@ -451,6 +464,11 @@ fn yes_no(value: bool) -> &'static str {
 
 fn read(path: &Path) -> Result<Vec<u8>, Error> {
     std::fs::read(path).map_err(|e| Error::io(path, e))
+}
+
+/// Read a file that a flag may or may not have named.
+fn read_optional(path: Option<&PathBuf>) -> Result<Option<Vec<u8>>, Error> {
+    path.map(|p| read(p)).transpose()
 }
 
 fn write(path: &Path, data: &[u8]) -> Result<(), Error> {

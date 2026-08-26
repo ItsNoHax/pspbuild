@@ -270,7 +270,33 @@ All of it is verified against a real archive: `tests/npdrm.rs` checks that the
 reference EBOOT's own signature validates under the published key, and that the
 length-prefixed digest does not.
 
-### 3.6 `DATA.PSP`, PGD, STARTDAT, OPNSSMP
+### 3.6 `DATA.PSP`, PGD, STARTDAT, OPNSSMP — **answered and implemented**
+
+**`DATA.PSP`** is a 0x594-byte licence stub: a signature, a content ID,
+`np_flags` and zeros. See `src/npdrm/data_psp.rs`.
+
+**`STARTDAT`** is the boot screen: a PNG behind a 0x50-byte header, at
+`0x594 + 0xC`. Every field agrees across all four Sony containers and with the
+reference implementation. See `src/npdrm/startdat.rs`.
+
+**`OPNSSMP`** is a module wrapped in a **PGD** container and appended after
+`STARTDAT`, with its offset and size recorded at `0x30`. Implemented in
+`src/npdrm/pgd.rs`, with one important caveat.
+
+A PGD's DNAS MAC is keyed by a published constant, so it can be verified
+without any secret — and it checks out on all three Sony containers that carry
+an `OPNSSMP`, under BB-MAC type 1. That confirms the header layout and the mode
+derivation on real data. Everything else in those containers is keyed by the
+content key, and all three are supplied-key titles, so their bodies cannot be
+decrypted here.
+
+Which key the console uses for the body is therefore **not established**. The
+reference implementation is no guide: it generates a random PGD key, encrypts
+with it, and never stores it, so anything it writes with an `OPNSSMP` is
+undecryptable by anything including the PSP. This crate passes the archive's
+version key instead, which is a reasoned choice rather than a measured fact.
+
+### 3.6a Original questions
 
 - Which of these are mandatory and which are conditional on content.
 - Their structures, as named types rather than one opaque byte array.
@@ -293,7 +319,9 @@ What is left:
    here is a claim about the PSP line as a whole.
 2. **Supplied version keys.** Building is wired for fixed-key titles.
    Supplied-key content needs a `KEYS.BIN` that is tied to the buying account.
-3. **`STARTDAT` and `OPNSSMP`** — optional inputs, §3.6, still open.
+3. **A boot test for the extras.** `STARTDAT` and `OPNSSMP` are implemented
+   (§3.6) but no container carrying either has been on a console. The
+   `OPNSSMP` key in particular rests on an inference — see below.
 
 Not on this list any more: a retail Sony EG EBOOT, which was the standing
 blocker for most of this work. Four are now on hand and the comparison has been

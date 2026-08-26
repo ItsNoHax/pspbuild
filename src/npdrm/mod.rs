@@ -35,7 +35,9 @@ pub mod fixed_key;
 pub mod keys;
 pub mod lzrc;
 pub mod npumdimg;
+pub mod pgd;
 pub mod random;
+pub mod startdat;
 pub mod table;
 
 #[cfg(test)]

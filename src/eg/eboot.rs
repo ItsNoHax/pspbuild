@@ -36,8 +36,8 @@ use std::io::{Read, Seek, Write};
 use crate::error::{Error, Result};
 use crate::iso::{Iso, PSP_GAME_ASSETS};
 use crate::npdrm::archive::{ArchiveOptions, ArchiveSummary, write_archive};
-use crate::npdrm::data_psp;
 use crate::npdrm::random::Entropy;
+use crate::npdrm::{data_psp, pgd, startdat};
 use crate::pbp::{PbpBuilder, PbpSection};
 use crate::sfo::{Category, Sfo, SfoEntry};
 
@@ -56,6 +56,10 @@ pub struct EgEboot {
     pub title: Option<String>,
     /// Bytes of PBP header, SFO and media, before `DATA.PSAR`.
     pub container_size: u64,
+    /// Size of the boot screen image, or zero if there is none.
+    pub startdat_size: usize,
+    /// Size of the encrypted `OPNSSMP`, or zero if there is none.
+    pub opnssmp_size: usize,
     /// Detail from the archive step.
     pub archive: ArchiveSummary,
 }
@@ -76,6 +80,7 @@ where
     W: Write + Seek,
     E: Entropy,
 {
+    let version_key = options.version_key_for_extras()?;
     let mut iso = Iso::new(image)?;
 
     // 1. The disc's PARAM.SFO, relabelled. A UMD's own table says CATEGORY=UG;
@@ -90,8 +95,26 @@ where
     sfo.set(SfoEntry::text_padded("CATEGORY", Category::Eg.as_str(), 4)?);
     let param_sfo = sfo.to_bytes();
 
-    // 2. The licence stub, over the *relabelled* table.
-    let container_data_psp = data_psp::build(&param_sfo, &options.content_id, options.np_flags)?;
+    // 2. The licence stub, over the *relabelled* table, plus whatever optional
+    //    extras were asked for. The extras sit after the signed stub and are
+    //    not covered by its signature.
+    let extras = data_psp::Extras {
+        startdat: match &options.startdat {
+            Some(png) => Some(startdat::build(png)?),
+            None => None,
+        },
+        opnssmp: match &options.opnssmp {
+            Some(module) => Some(pgd::encrypt(
+                module,
+                &version_key,
+                pgd::DEFAULT_BLOCK_SIZE,
+                entropy,
+            )?),
+            None => None,
+        },
+    };
+    let container_data_psp =
+        data_psp::build_with(&param_sfo, &options.content_id, options.np_flags, &extras)?;
 
     // 3. Media, copied from the disc. Absent assets stay absent: a UMD is not
     //    required to carry all of them, and SND0.AT3 frequently is not there.
@@ -146,6 +169,8 @@ where
         content_id: options.content_id.clone(),
         title,
         container_size: psar_offset,
+        startdat_size: options.startdat.as_ref().map_or(0, Vec::len),
+        opnssmp_size: extras.opnssmp.as_ref().map_or(0, Vec::len),
         archive,
     })
 }
@@ -232,6 +257,78 @@ mod tests {
         let mut disc = Iso::new(Cursor::new(image)).unwrap();
         let disc_sfo = Sfo::parse(&disc.read_file("/PSP_GAME/PARAM.SFO").unwrap()).unwrap();
         assert_eq!(disc_sfo.get_text("CATEGORY").as_deref(), Some("UG"));
+    }
+
+    /// The optional extras have to land where the format puts them and be
+    /// recoverable afterwards.
+    #[test]
+    fn startdat_and_opnssmp_are_carried_and_readable() {
+        let image = synthetic_umd();
+        let png = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            v.resize(600, 0x33);
+            v
+        };
+        let module: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
+
+        let mut options = ArchiveOptions::fixed_key(CONTENT_ID);
+        options.startdat = Some(png.clone());
+        options.opnssmp = Some(module.clone());
+        let version_key = options.version_key_for_extras().unwrap();
+
+        let mut out = Cursor::new(Vec::new());
+        let built = build_eg_eboot(
+            Cursor::new(image.clone()),
+            image.len() as u64,
+            &mut out,
+            &options,
+            &mut PredictableEntropy::new(9),
+        )
+        .unwrap();
+        assert_eq!(built.startdat_size, png.len());
+
+        let bytes = out.into_inner();
+        let pbp = Pbp::parse(&bytes).unwrap();
+        let psp = pbp.section(PbpSection::DataPsp);
+
+        // The licence stub still verifies; the extras sit outside its signature.
+        assert!(data_psp::verify(psp, pbp.section(PbpSection::ParamSfo)).unwrap());
+
+        // STARTDAT is at the fixed offset and gives the image back.
+        let block = data_psp::startdat(psp).expect("a STARTDAT was written");
+        let parsed = startdat::StartDat::parse(block).unwrap();
+        assert_eq!(parsed.image(block), &png[..]);
+
+        // OPNSSMP is where the slot says, and decrypts under the version key.
+        let carried = data_psp::opnssmp(psp).expect("an OPNSSMP was written");
+        assert!(pgd::verify_dnas(carried).unwrap());
+        assert_eq!(pgd::decrypt(carried, &version_key).unwrap(), module);
+    }
+
+    /// Neither extra is written unless asked for, and a container without them
+    /// must not look as though it has them.
+    #[test]
+    fn a_container_without_extras_reports_none() {
+        let image = synthetic_umd();
+        let mut out = Cursor::new(Vec::new());
+        build_eg_eboot(
+            Cursor::new(image.clone()),
+            image.len() as u64,
+            &mut out,
+            &ArchiveOptions::fixed_key(CONTENT_ID),
+            &mut PredictableEntropy::new(2),
+        )
+        .unwrap();
+
+        let bytes = out.into_inner();
+        let pbp = Pbp::parse(&bytes).unwrap();
+        let psp = pbp.section(PbpSection::DataPsp);
+        assert!(data_psp::startdat(psp).is_none());
+        assert!(data_psp::opnssmp(psp).is_none());
+        assert_eq!(
+            psp.len(),
+            data_psp::DATA_PSP_SIZE + psp.len() - data_psp::DATA_PSP_SIZE
+        );
     }
 
     #[test]

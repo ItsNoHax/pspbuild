@@ -52,6 +52,12 @@ const CONTENT_ID: std::ops::Range<usize> = 0x560..0x590;
 /// Where `np_flags` sits, big-endian.
 const NP_FLAGS: std::ops::Range<usize> = 0x590..0x594;
 
+/// Where the OPNSSMP offset and size sit, when there is one.
+const OPNSSMP_SLOT: std::ops::Range<usize> = 0x030..0x038;
+
+/// `STARTDAT` begins twelve bytes after the stub, not immediately after it.
+const STARTDAT_OFFSET: usize = DATA_PSP_SIZE + crate::npdrm::startdat::GAP;
+
 /// The digest a `DATA.PSP` signature is made over.
 ///
 /// `content_id_field` is the 0x30-byte field as stored, padding included —
@@ -60,12 +66,35 @@ pub fn digest(param_sfo: &[u8], content_id_field: &[u8; CONTENT_ID_SIZE]) -> Dig
     sha1_chunks(&[param_sfo, content_id_field])
 }
 
+/// The optional extras a container may carry after the licence stub.
+#[derive(Debug, Default, Clone)]
+pub struct Extras {
+    /// A `STARTDAT` block, from [`crate::npdrm::startdat::build`].
+    pub startdat: Option<Vec<u8>>,
+    /// An encrypted `OPNSSMP`, from [`crate::npdrm::pgd::encrypt`].
+    pub opnssmp: Option<Vec<u8>>,
+}
+
 /// Build and sign a `DATA.PSP` for a container.
 ///
 /// `param_sfo` must already carry `CATEGORY=EG`, since the signature covers
 /// it. Passing the unmodified SFO from a disc produces a container that
 /// verifies against the wrong category.
 pub fn build(param_sfo: &[u8], content_id: &str, np_flags: u32) -> Result<Vec<u8>> {
+    build_with(param_sfo, content_id, np_flags, &Extras::default())
+}
+
+/// Build a `DATA.PSP` carrying optional extras.
+///
+/// The extras sit after the signed stub and are **not** covered by its
+/// signature — only `PARAM.SFO` and the content ID are. Their integrity comes
+/// from elsewhere: a PGD carries its own MACs, and a `STARTDAT` is a picture.
+pub fn build_with(
+    param_sfo: &[u8],
+    content_id: &str,
+    np_flags: u32,
+    extras: &Extras,
+) -> Result<Vec<u8>> {
     let id = content_id.as_bytes();
     if id.len() > CONTENT_ID_SIZE || !content_id.is_ascii() {
         return Err(Error::Crypto(format!(
@@ -87,7 +116,41 @@ pub fn build(param_sfo: &[u8], content_id: &str, np_flags: u32) -> Result<Vec<u8
             "freshly generated DATA.PSP signature does not verify".into(),
         ));
     }
+
+    // STARTDAT goes at a fixed offset with a gap ahead of it; OPNSSMP follows
+    // whatever came before, and records where it landed.
+    if let Some(startdat) = &extras.startdat {
+        out.resize(STARTDAT_OFFSET, 0);
+        out.extend_from_slice(startdat);
+    }
+    if let Some(opnssmp) = &extras.opnssmp {
+        let offset = out.len();
+        out.extend_from_slice(opnssmp);
+        let slot = OPNSSMP_SLOT.start;
+        out[slot..slot + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+        out[slot + 4..slot + 8].copy_from_slice(&(opnssmp.len() as u32).to_le_bytes());
+    }
+
     Ok(out)
+}
+
+/// The `STARTDAT` block a container carries, if any.
+pub fn startdat(data_psp: &[u8]) -> Option<&[u8]> {
+    let block = data_psp.get(STARTDAT_OFFSET..)?;
+    block
+        .starts_with(crate::npdrm::startdat::MAGIC)
+        .then_some(block)
+}
+
+/// The encrypted `OPNSSMP` a container carries, if any.
+pub fn opnssmp(data_psp: &[u8]) -> Option<&[u8]> {
+    let slot = data_psp.get(OPNSSMP_SLOT)?;
+    let offset = u32::from_le_bytes(slot[..4].try_into().ok()?) as usize;
+    let size = u32::from_le_bytes(slot[4..].try_into().ok()?) as usize;
+    if offset == 0 || size == 0 {
+        return None;
+    }
+    data_psp.get(offset..offset.checked_add(size)?)
 }
 
 /// Check the signature on an existing `DATA.PSP` against a `PARAM.SFO`.

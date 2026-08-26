@@ -966,3 +966,64 @@ fn our_compression_matches_sonys_on_their_own_blocks() {
         "our compression is materially worse than Sony's: {ours} vs {theirs} bytes"
     );
 }
+
+/// Sony's own `OPNSSMP` container must pass the one check that needs no secret.
+///
+/// A PGD's DNAS MAC is keyed by a published constant rather than by the
+/// content key, so it can be verified on any container. It covers the whole
+/// header — magic, mode fields, both wrapped keys, the sizes and the header
+/// MAC — so agreeing with it confirms the layout and the mode derivation
+/// together on real data.
+///
+/// The rest of a Sony PGD is keyed by the content key, and every container
+/// here that carries one is a supplied-key title. Those bodies cannot be
+/// decrypted, and the test says so rather than pretending otherwise.
+#[test]
+fn sonys_opnssmp_passes_the_check_that_needs_no_key() {
+    let Some(path) = locate() else {
+        eprintln!("skipped: no EG EBOOT.PBP available");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("the container reads");
+    let pbp = pspbuild::pbp::Pbp::parse(&bytes).expect("it is a PBP");
+    let data_psp = pbp.section(PbpSection::DataPsp);
+
+    let Some(pgd) = pspbuild::npdrm::data_psp::opnssmp(data_psp) else {
+        eprintln!("skipped: this container carries no OPNSSMP");
+        return;
+    };
+
+    assert!(
+        pspbuild::npdrm::pgd::verify_dnas(pgd).expect("the PGD header parses"),
+        "Sony's OPNSSMP fails its DNAS MAC"
+    );
+    eprintln!("  OPNSSMP: {} bytes, DNAS MAC verified", pgd.len());
+}
+
+/// A container's `STARTDAT` must be a PNG behind the documented header.
+#[test]
+fn sonys_startdat_is_a_png_behind_the_documented_header() {
+    let Some(path) = locate() else {
+        eprintln!("skipped: no EG EBOOT.PBP available");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("the container reads");
+    let pbp = pspbuild::pbp::Pbp::parse(&bytes).expect("it is a PBP");
+    let data_psp = pbp.section(PbpSection::DataPsp);
+
+    let Some(block) = pspbuild::npdrm::data_psp::startdat(data_psp) else {
+        eprintln!("skipped: this container carries no STARTDAT");
+        return;
+    };
+
+    let parsed = pspbuild::npdrm::startdat::StartDat::parse(block).expect("STARTDAT parses");
+    assert_eq!(parsed.header_size, 0x50, "unexpected STARTDAT header size");
+
+    let image = parsed.image(block);
+    assert_eq!(
+        &image[..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        "the STARTDAT payload is not a PNG"
+    );
+    eprintln!("  STARTDAT: {} byte PNG", image.len());
+}
