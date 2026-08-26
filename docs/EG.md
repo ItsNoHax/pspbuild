@@ -21,9 +21,13 @@ offset and in total size; only the values the format requires to be random
 differ. The format itself was checked against four genuine Sony Store archives,
 not just against `sign_np` — see §1.
 
+A container built this way **boots on a retail PSP Slim running official
+firmware**, and the game runs — see [COMPATIBILITY.md §1.1](COMPATIBILITY.md).
+Official firmware matters here: most custom firmwares relax the NPDRM checks
+this exercises.
+
 What is left is listed in §4. The largest item is the LZRC *encoder*, whose
-absence makes archives about a third larger than Sony's rather than wrong, and
-a hardware boot test, which is a separate claim from format correctness.
+absence makes archives about a third larger than Sony's rather than wrong.
 
 ## 1. What was needed, and what is in hand
 
@@ -281,10 +285,11 @@ What is left:
    Sony's own archives; compression is not, so every block is stored raw. The
    archive is valid and reads back correctly, and about a third larger than
    Sony ships. This is a size optimisation, not a correctness gap.
-2. **A hardware boot test.** Format correctness and acceptance by the PSP's
-   loader are separate claims. The MG path was settled by booting it; this one
-   has not been. Until then the honest statement is that the output agrees with
-   a reference whose output the PSP is known to accept.
+2. **The negative control on hardware.** A container built here **boots on a
+   retail PSP Slim on official firmware** — see
+   [COMPATIBILITY.md §1.1](COMPATIBILITY.md). What has not been shown is that
+   the same console *rejects* a corrupted one, so "OFW validates our signature"
+   is still an inference rather than a measurement.
 3. **Supplied version keys.** Building is wired for fixed-key titles.
    Supplied-key content needs a `KEYS.BIN` that is tied to the buying account.
 4. **`STARTDAT` and `OPNSSMP`** — optional inputs, §3.6, still open.

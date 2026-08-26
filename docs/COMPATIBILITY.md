@@ -7,6 +7,7 @@ What has actually been tested, and what has not.
 | target | result |
 | --- | --- |
 | PSP Slim, official firmware | MG EBOOT boots — single **and** multi-segment |
+| PSP Slim, official firmware | **EG EBOOT boots** — a retail UMD rebuilt by `build-eg` |
 | other PSP models | untested |
 | other firmware revisions | untested |
 
@@ -25,6 +26,27 @@ Three boot tests, each answering something the others could not:
 The third is the one that closed a real open question. AngleZero has a single
 segment, so no amount of testing it could say anything about `seg_size[1]`.
 Rebuilding a genuine two-segment Sony module and booting it did.
+
+### 1.1 The EG path
+
+A 1.06 GiB `EBOOT.PBP` built by `pspbuild build-eg` from a retail LEGO Batman
+UMD **boots on the same console**, on official firmware, and the game runs.
+
+That the firmware is *official* is what makes this worth recording. Most custom
+firmwares relax or remove the NPDRM signature checks, so a boot there would not
+distinguish a valid container from one the loader stopped inspecting. On OFW
+those checks are live, and the container went through them: the `DATA.PSP`
+signature over `PARAM.SFO || content_id`, the NPUMDIMG header signature, the
+header hash, the block MACs and the data key, plus the geometry — `lba_end`,
+`nsectors`, `block_entry_offset` and the 0x100 alignment of `DATA.PSAR`.
+
+**Still outstanding: the negative control.** A boot proves the firmware accepts
+this container; it does not prove the firmware would *reject* a bad one. Until
+a deliberately corrupted signature has been shown to fail on the same console,
+"OFW validates our signature" remains an inference rather than a measurement.
+The test is cheap — one byte, flipped in place — and is filed as a task.
+
+### 1.2 MG header fields
 
 Two header fields were isolated on that hardware by varying one at a time
 against an otherwise byte-identical build:
