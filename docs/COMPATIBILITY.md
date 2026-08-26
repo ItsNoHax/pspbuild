@@ -47,9 +47,10 @@ signature was corrupted and the same console asked again:
 
 | container | result |
 | --- | --- |
-| as built | boots, game runs |
+| as built, uncompressed | boots, game runs |
 | one byte flipped at `DATA.PSAR + 0xD8` | **refused — `80010087`** |
 | that byte flipped back | boots again |
+| **rebuilt with compression** | **boots** |
 
 The third row matters as much as the second. Restoring the bit restores the
 behaviour, and `cmp` confirms the restored file is byte-identical to the one
@@ -65,6 +66,19 @@ the different outcome.
 That makes "official firmware validates the NPUMDIMG signature, and accepts
 ours" a measurement rather than an inference — which is the whole reason the
 control was worth running.
+
+The fourth row closes the last gap. Everything above it was built with
+`--no-compress`, so the firmware's own LZRC decoder had never been asked to
+read this crate's encoder output. A compressed build — 604 MB against 1.14 GB,
+with 66% of its blocks compressed — boots on the same console. That is a third
+independent decoder agreeing: ours, the reference's, and the firmware's.
+
+One limit worth stating. Booting reads the blocks needed to boot, not all
+34,689 of them, so hardware has not exercised every block. What covers the rest
+is `the_whole_image_reconstructs_and_parses`, which decodes every block and
+rebuilds the image — through a decoder pinned against 4,216 genuine Sony
+blocks. Neither check is sufficient alone; together they cover both "the
+firmware accepts our output" and "every block is right".
 
 ### 1.2 MG header fields
 

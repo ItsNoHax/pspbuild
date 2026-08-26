@@ -22,9 +22,9 @@ be random differ. The format itself was checked against four genuine Sony Store 
 not just against `sign_np` — see §1.
 
 A container built this way **boots on a retail PSP Slim running official
-firmware**, and the game runs. Corrupting one byte of its signature makes the
-same console refuse it, so the firmware is demonstrably checking rather than
-merely permitting — see [COMPATIBILITY.md §1.1](COMPATIBILITY.md). Official
+firmware**, compressed or not, and the game runs. Corrupting one byte of its
+signature makes the same console refuse it, so the firmware is demonstrably
+checking rather than merely permitting — see [COMPATIBILITY.md §1.1](COMPATIBILITY.md). Official
 firmware matters here: most custom firmwares relax the very checks this
 exercises.
 
@@ -287,16 +287,13 @@ being the values the format requires to be random.
 
 What is left:
 
-1. **A boot test for the compressed form.** The archive that booted was built
-   uncompressed. The compressed one passes every check this crate can make,
-   including rebuilding the whole image, but has not been on a console.
-2. **Wider hardware coverage.** One console, one firmware revision, one disc.
+1. **Wider hardware coverage.** One console, one firmware revision, one disc.
    The signature path is measured — a corrupted container is refused on the
    same console, see [COMPATIBILITY.md §1.1](COMPATIBILITY.md) — but nothing
    here is a claim about the PSP line as a whole.
-3. **Supplied version keys.** Building is wired for fixed-key titles.
+2. **Supplied version keys.** Building is wired for fixed-key titles.
    Supplied-key content needs a `KEYS.BIN` that is tied to the buying account.
-4. **`STARTDAT` and `OPNSSMP`** — optional inputs, §3.6, still open.
+3. **`STARTDAT` and `OPNSSMP`** — optional inputs, §3.6, still open.
 
 Not on this list any more: a retail Sony EG EBOOT, which was the standing
 blocker for most of this work. Four are now on hand and the comparison has been
