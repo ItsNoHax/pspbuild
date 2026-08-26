@@ -31,6 +31,7 @@ pub mod blocks;
 pub mod ecdsa;
 pub mod fixed_key;
 pub mod keys;
+pub mod lzrc;
 pub mod npumdimg;
 pub mod table;
 

@@ -31,16 +31,14 @@
 //! archives use this heavily and mix the two freely — one observed title
 //! stores 4,216 of its 6,119 blocks compressed and the rest raw.
 //!
-//! **LZRC is not implemented here.** The consequence is narrower than it
-//! sounds: compression sits *inside* the encryption, so a compressed block's
-//! MAC still verifies and it still decrypts, and only the last step — turning
-//! the result back into image bytes — is missing. A block is compressed
-//! exactly when its table entry's size is below the block size; nothing in the
-//! header records it.
+//! Compression sits *inside* the encryption, so a block is decrypted first and
+//! decompressed after. A block is compressed exactly when its table entry's
+//! size is below the block size; nothing in the header records it. See
+//! [`crate::npdrm::lzrc`], which implements the decoder.
 //!
-//! [`BlockLayout`] therefore describes where things are, which holds either
-//! way, except for [`BlockLayout::archive_size`], which assumes no
-//! compression and is documented as such.
+//! [`BlockLayout`] describes where things are, which holds either way, except
+//! for [`BlockLayout::archive_size`], which assumes no compression and is
+//! documented as such.
 
 use crate::crypto::aes::Key;
 use crate::error::{Error, Result};

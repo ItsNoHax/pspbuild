@@ -257,22 +257,19 @@ length-prefixed digest does not.
 
 Section 3 is answered, and the specification has been checked against genuine
 Sony archives rather than only against `sign_np` (§1). The header chain, the
-block table and the per-block crypto are all implemented. What is left is
-construction and one missing algorithm:
+block table, the per-block crypto and LZRC decompression are all implemented —
+a Sony archive reconstructs into a UMD image this crate can then read. What is
+left is construction:
 
-1. **LZRC decompression.** Sony compresses, heavily and per block: 4,216 of
-   `NPJH90232`'s 6,119 blocks are stored smaller than a full block, mixed
-   freely with 1,903 raw ones. Their MACs verify, so the table and the crypto
-   around them are confirmed — but the contents cannot be read back without
-   this. It is the single largest gap.
-2. **A source of randomness.** Signing needs a one-time nonce and the header
+1. **A source of randomness.** Signing needs a one-time nonce and the header
    needs a `header_key` and `padding`; all three are currently parameters with
    no producer behind them. That is deliberate — it keeps the crypto testable
    and reproducible — but something has to supply them before an archive can be
    written.
-3. **Assembling an archive.** The pieces exist; nothing yet writes a finished
-   `DATA.PSAR` from an ISO.
-4. **`DATA.PSP`, `STARTDAT`, `OPNSSMP`** — §3.6, still open.
+2. **Assembling an archive.** The pieces exist; nothing yet writes a finished
+   `DATA.PSAR` from an ISO. Blocks would be stored raw, since only the LZRC
+   decoder is implemented — valid, just larger than Sony's.
+3. **`DATA.PSP`, `STARTDAT`, `OPNSSMP`** — §3.6, still open.
 
 Not on this list any more: a retail Sony EG EBOOT, which was the standing
 blocker for most of this work. Four are now on hand and the comparison has been

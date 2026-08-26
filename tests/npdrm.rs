@@ -24,7 +24,7 @@ use pspbuild::npdrm::blocks::{SECTOR_SIZE, data_key};
 use pspbuild::npdrm::keys::NPUMDIMG_PUBLIC_KEY;
 use pspbuild::npdrm::table::ENTRY_SIZE;
 use pspbuild::npdrm::{
-    BbMacType, BlockEntry, BlockLayout, bbcipher, bbmac, decrypt_block, fixed_key,
+    BbMacType, BlockEntry, BlockLayout, bbcipher, bbmac, decrypt_block, fixed_key, lzrc,
 };
 use pspbuild::pbp::{PbpSection, parse_layout};
 
@@ -578,12 +578,6 @@ fn blocks_decrypt_back_to_the_source_image() {
     let header_key = key_at(&archive.header, field::HEADER_KEY);
 
     let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
-    let first = BlockEntry::from_bytes(&table).expect("first entry decodes");
-    if first.size != layout.block_size() {
-        eprintln!("skipped: this archive is compressed and LZRC is not implemented");
-        return;
-    }
-
     let Some(iso_path) = find_source_iso() else {
         eprintln!("skipped: no source ISO to compare against");
         return;
@@ -602,15 +596,23 @@ fn blocks_decrypt_back_to_the_source_image() {
         decrypt_block(&mut block, &entry, &header_key, &version_key)
             .unwrap_or_else(|e| panic!("block {index} does not decrypt: {e}"));
 
-        let mut original = vec![0u8; entry.size as usize];
-        iso.seek(SeekFrom::Start(
-            u64::from(index) * u64::from(layout.block_size()),
-        ))
-        .expect("seek in the image");
+        let plain = if entry.size == layout.block_size() {
+            block
+        } else {
+            lzrc::decompress(&block, layout.block_size() as usize)
+                .unwrap_or_else(|e| panic!("block {index} does not decompress: {e}"))
+        };
+
+        // The final block is padded out, so compare only the image's own bytes.
+        let start = u64::from(index) * u64::from(layout.block_size());
+        let len = plain.len().min((layout.iso_size - start) as usize);
+        let mut original = vec![0u8; len];
+        iso.seek(SeekFrom::Start(start)).expect("seek in the image");
         iso.read_exact(&mut original).expect("read from the image");
 
         assert_eq!(
-            block, original,
+            plain[..len],
+            original[..],
             "block {index} does not match the source image"
         );
     }
@@ -652,4 +654,178 @@ fn sample_indices(blocks: u32) -> Vec<u32> {
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+/// Every compressed block must expand to exactly one full block.
+///
+/// LZRC carries no length of its own — the decoder is told how big the result
+/// should be and the stream ends with a marker. If the decoder were subtly
+/// wrong, the overwhelmingly likely symptom is a stream that ends early or
+/// runs long, so the length is a sharp check even before the contents are
+/// looked at.
+#[test]
+fn compressed_blocks_decompress_to_full_blocks() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+
+    let mut compressed = 0;
+    let mut stored = 0;
+    for index in sample_indices(layout.blocks) {
+        let entry =
+            BlockEntry::from_bytes(&table[index as usize * ENTRY_SIZE..]).expect("entry decodes");
+        let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+        decrypt_block(&mut block, &entry, &header_key, &version_key).expect("block decrypts");
+
+        if entry.size == layout.block_size() {
+            stored += 1;
+            continue;
+        }
+        compressed += 1;
+
+        let plain = lzrc::decompress(&block, layout.block_size() as usize)
+            .unwrap_or_else(|e| panic!("block {index} does not decompress: {e}"));
+        assert_eq!(
+            plain.len(),
+            layout.block_size() as usize,
+            "block {index} decompressed to the wrong length"
+        );
+    }
+    eprintln!("  sampled {compressed} compressed and {stored} stored blocks");
+}
+
+/// The decompressed image has to be a UMD, and it has to be *this* archive's
+/// UMD.
+///
+/// The ISO9660 primary volume descriptor lives at sector 16, which is inside
+/// the second block, so decoding one block is enough to reach it. Two things
+/// are then checked against the outer NPUMDIMG header: the volume size, and
+/// the disc ID embedded in the image against the archive's own content ID.
+///
+/// That cross-check is what makes this test worth more than a magic-number
+/// comparison. The image and the header are produced independently, so they
+/// can only agree if the block was decrypted, decompressed and placed
+/// correctly.
+#[test]
+fn the_decompressed_image_is_this_archives_umd() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+
+    // Sector 16, where the primary volume descriptor sits.
+    const PVD_SECTOR: u32 = 16;
+    let block_index = PVD_SECTOR / layout.block_basis;
+    let sector_in_block = (PVD_SECTOR % layout.block_basis) as usize;
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let entry =
+        BlockEntry::from_bytes(&table[block_index as usize * ENTRY_SIZE..]).expect("entry decodes");
+
+    let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+    decrypt_block(&mut block, &entry, &header_key, &version_key).expect("block decrypts");
+
+    let plain = if entry.size == layout.block_size() {
+        block
+    } else {
+        lzrc::decompress(&block, layout.block_size() as usize).expect("block decompresses")
+    };
+
+    let pvd = &plain[sector_in_block * SECTOR_SIZE as usize..][..SECTOR_SIZE as usize];
+    assert_eq!(pvd[0], 1, "not a primary volume descriptor");
+    assert_eq!(&pvd[1..6], b"CD001", "missing the ISO9660 signature");
+
+    // Volume size, as a both-endian field; the little-endian half is at 0x50.
+    let volume_blocks = u32::from_le_bytes(pvd[0x50..0x54].try_into().unwrap());
+    assert_eq!(
+        u64::from(volume_blocks) * u64::from(SECTOR_SIZE),
+        layout.iso_size,
+        "the image's own volume size disagrees with the archive header"
+    );
+
+    // A PSP UMD names itself in the system identifier. The volume identifier
+    // next to it is blank on real discs, which is why this uses the former.
+    let system_id = String::from_utf8_lossy(&pvd[0x08..0x28]);
+    assert_eq!(
+        system_id.trim_end(),
+        "PSP GAME",
+        "the decompressed image does not identify as a PSP UMD"
+    );
+}
+
+/// Rebuild the entire image and check it parses as a UMD.
+///
+/// This is the whole pipeline at once — every block decrypted, MAC-checked,
+/// decompressed and reassembled — and then handed to this crate's own ISO9660
+/// reader, which knows nothing about NPDRM and will simply fail if the result
+/// is not a real filesystem.
+///
+/// It reconstructs hundreds of megabytes, so it is opt-in: set
+/// `PSPBUILD_TEST_RECONSTRUCT=1`. It is the strongest evidence the decoder is
+/// correct and is worth running whenever LZRC changes.
+#[test]
+fn the_whole_image_reconstructs_and_parses() {
+    if std::env::var("PSPBUILD_TEST_RECONSTRUCT").is_err() {
+        eprintln!("skipped: set PSPBUILD_TEST_RECONSTRUCT=1 to rebuild the whole image");
+        return;
+    }
+
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let mut image = Vec::with_capacity(layout.iso_size as usize);
+
+    for index in 0..layout.blocks as usize {
+        let entry = BlockEntry::from_bytes(&table[index * ENTRY_SIZE..]).expect("entry decodes");
+        let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+        decrypt_block(&mut block, &entry, &header_key, &version_key)
+            .unwrap_or_else(|e| panic!("block {index}: {e}"));
+
+        let plain = if entry.size == layout.block_size() {
+            block
+        } else {
+            lzrc::decompress(&block, layout.block_size() as usize)
+                .unwrap_or_else(|e| panic!("block {index}: {e}"))
+        };
+        assert_eq!(plain.len(), layout.block_size() as usize, "block {index}");
+        image.extend_from_slice(&plain);
+    }
+
+    image.truncate(layout.iso_size as usize);
+    assert_eq!(image.len() as u64, layout.iso_size);
+
+    // Hand it to the ISO reader, which has no idea where these bytes came from.
+    let mut iso = pspbuild::iso::Iso::new(std::io::Cursor::new(image))
+        .expect("the reconstructed image is not a valid ISO9660 filesystem");
+
+    let sfo_bytes = iso
+        .read_file("/PSP_GAME/PARAM.SFO")
+        .expect("the image has no PSP_GAME/PARAM.SFO");
+    let sfo = pspbuild::Sfo::parse(&sfo_bytes).expect("PARAM.SFO parses");
+
+    // A UMD's own PARAM.SFO is CATEGORY=UG, and its DISC_ID is the same title
+    // the outer archive names in its content ID.
+    assert_eq!(sfo.get_text("CATEGORY").as_deref(), Some("UG"));
+    let disc_id = sfo.get_text("DISC_ID").expect("DISC_ID is present");
+    assert!(
+        content_id(&archive.header).contains(&disc_id),
+        "the image's DISC_ID {disc_id:?} is not in the archive's content ID"
+    );
+
+    assert!(
+        iso.exists("/PSP_GAME/SYSDIR/EBOOT.BIN"),
+        "no bootable executable in the reconstructed image"
+    );
 }

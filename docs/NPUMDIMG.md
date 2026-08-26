@@ -13,9 +13,11 @@ those are not the same claim.
 
 **Status: header and block layer implemented.** The header crypto chain of §3
 — BB-Cipher, BB-MAC, the fixed key, SHA-1 and ECDSA — and the block table and
-per-block crypto of §5 and §6 are implemented in `src/npdrm` and verified
-against real archives, Sony's included. Not implemented: **LZRC
-decompression**, and assembling a complete archive. See [EG.md](EG.md).
+per-block crypto of §5 and §6, and LZRC decompression, are all implemented in
+`src/npdrm` and verified against real archives, Sony's included — a Sony
+archive reconstructs block for block into a UMD image that this crate's own
+ISO9660 reader parses. Not implemented: the LZRC *encoder*, and assembling a
+complete archive. See [EG.md](EG.md).
 
 ## 1. Layout
 
@@ -397,8 +399,16 @@ compressed exactly when its table entry's `size` is less than `block_size`,
 which is the only place the fact is written down. (An earlier revision of this
 document attributed that role to `unk_2`; see §2.4 for why that is wrong.)
 
-`pspbuild` implements the encryption and MAC of this section but **not LZRC**,
-so it can authenticate a compressed block without being able to read it.
+`pspbuild` implements this section including LZRC decompression. Validated on
+`NPJH90232`: all 6,119 blocks decrypt, all 4,216 compressed ones expand to
+exactly 32,768 bytes, and the reassembled 191 MiB image parses as an ISO9660
+UMD whose `PSP_GAME/PARAM.SFO` names the same title as the archive's content
+ID.
+
+The **encoder** is not implemented, and does not need to be. Compression is
+per block and optional — a block stored raw is as valid as a compressed one,
+and the reference falls back to raw whenever compression saves less than 10%.
+An encoder makes archives smaller, not more correct.
 
 ## 7. Validated against Sony
 
@@ -433,10 +443,10 @@ appear identically in Sony's archives. Their *meaning* is still unknown.
 
 - Whether the zeroed body fields are required or merely conventional.
 - What `unk_8` = `0x1010` and `unk_40` = `0x01003FFE` mean.
-- **LZRC compression.** Sony compresses: 4,216 of `NPJH90232`'s 6,119 blocks
-  are stored smaller than a full block, mixed freely with uncompressed ones.
-  Block contents cannot be recovered from a compressed archive until this is
-  implemented, though their MACs can still be checked.
+- **The LZRC encoder.** Decompression is implemented and validated against
+  Sony's own archives; compression is not. Archives can therefore be read but
+  would have to be written with every block stored raw, which is valid and
+  merely larger.
 - **Supplied version keys.** Three of the four Sony archives use them. The key
   ships separately, in a `KEYS.BIN` tied to the account that bought the
   content, so those archives can be structurally validated and their
