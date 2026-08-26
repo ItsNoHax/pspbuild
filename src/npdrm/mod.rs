@@ -27,16 +27,20 @@
 
 pub mod bbcipher;
 pub mod bbmac;
+pub mod blocks;
 pub mod ecdsa;
 pub mod fixed_key;
 pub mod keys;
 pub mod npumdimg;
+pub mod table;
 
 #[cfg(test)]
 mod test_vectors;
 
 pub use bbcipher::{BbCipher, bbcipher};
 pub use bbmac::{BbMac, BbMacType, bbmac};
+pub use blocks::{BlockLayout, decrypt_block, encrypt_block};
 pub use ecdsa::Signature;
 pub use fixed_key::{FIXED_KEY_FLAG, fixed_key};
 pub use npumdimg::{header_digest, sign_header, verify_header};
+pub use table::{BlockEntry, ENTRY_SIZE};

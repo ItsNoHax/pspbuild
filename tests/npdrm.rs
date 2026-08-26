@@ -20,8 +20,12 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use pspbuild::crypto::aes::Key;
+use pspbuild::npdrm::blocks::{SECTOR_SIZE, data_key};
 use pspbuild::npdrm::keys::NPUMDIMG_PUBLIC_KEY;
-use pspbuild::npdrm::{BbMacType, bbcipher, bbmac, fixed_key};
+use pspbuild::npdrm::table::ENTRY_SIZE;
+use pspbuild::npdrm::{
+    BbMacType, BlockEntry, BlockLayout, bbcipher, bbmac, decrypt_block, fixed_key,
+};
 use pspbuild::pbp::{PbpSection, parse_layout};
 
 /// Offsets within the NPUMDIMG header. See `docs/NPUMDIMG.md`.
@@ -103,6 +107,143 @@ macro_rules! header_or_skip {
     };
 }
 
+/// An archive opened for reading, positioned by absolute offsets within
+/// `DATA.PSAR` rather than within the containing file.
+struct Archive {
+    file: std::fs::File,
+    psar_start: u64,
+    header: [u8; HEADER_SIZE],
+}
+
+impl Archive {
+    fn open() -> Option<Self> {
+        let path = locate()?;
+        let mut file = std::fs::File::open(&path).ok()?;
+        let total = file.metadata().ok()?.len();
+
+        let mut container_header = [0u8; pspbuild::pbp::HEADER_SIZE];
+        file.read_exact(&mut container_header).ok()?;
+        let (offset, _) = parse_layout(&container_header, total)
+            .ok()?
+            .section(PbpSection::DataPsar);
+
+        let psar_start = u64::from(offset);
+        file.seek(SeekFrom::Start(psar_start)).ok()?;
+        let mut header = [0u8; HEADER_SIZE];
+        file.read_exact(&mut header).ok()?;
+
+        Some(Archive {
+            file,
+            psar_start,
+            header,
+        })
+    }
+
+    fn read_at(&mut self, offset: u64, len: usize) -> Vec<u8> {
+        self.file
+            .seek(SeekFrom::Start(self.psar_start + offset))
+            .expect("seek within the archive");
+        let mut buf = vec![0u8; len];
+        self.file
+            .read_exact(&mut buf)
+            .expect("read within the archive");
+        buf
+    }
+
+    /// The version key, when the archive is one whose key can be derived.
+    ///
+    /// Only fixed-key archives qualify. A Store purchase carries `np_flags`
+    /// without the fixed-key bit and its key arrives separately, in a
+    /// `KEYS.BIN` tied to the account that bought it — so for those there is
+    /// nothing to derive and nothing this crate can decrypt.
+    fn version_key(&self) -> Option<Key> {
+        fixed_key(
+            &content_id(&self.header),
+            u32_at(&self.header, field::NP_FLAGS),
+        )
+        .ok()
+    }
+
+    /// The archive's geometry, taken from the header rather than assumed.
+    fn layout(&mut self) -> BlockLayout {
+        let version_key = self
+            .version_key()
+            .expect("layout() is only reachable through keyed_archive_or_skip!");
+        let header_key = key_at(&self.header, field::HEADER_KEY);
+        let mut body = self.header[field::BODY].to_vec();
+        bbcipher(&header_key, &version_key, 0, &mut body).expect("decrypt the body");
+
+        let lba_end = u32::from_le_bytes(body[0x24..0x28].try_into().unwrap());
+        let block_basis = u32_at(&self.header, field::BLOCK_BASIS);
+        let iso_size = u64::from(lba_end + 1) * u64::from(SECTOR_SIZE);
+
+        BlockLayout::new(iso_size, block_basis).expect("a real archive has a valid layout")
+    }
+}
+
+macro_rules! archive_or_skip {
+    () => {
+        match Archive::open() {
+            Some(archive) => archive,
+            None => {
+                eprintln!("skipped: no EG EBOOT.PBP available");
+                return;
+            }
+        }
+    };
+}
+
+/// Like [`archive_or_skip`], but also requires an archive whose version key
+/// can be derived. Anything needing to decrypt content goes through this.
+macro_rules! keyed_archive_or_skip {
+    () => {{
+        let archive = archive_or_skip!();
+        if archive.version_key().is_none() {
+            eprintln!("skipped: this archive uses a supplied version key, which is not available");
+            return;
+        }
+        archive
+    }};
+}
+
+/// A header together with the version key derived from it, skipping when the
+/// archive's key is not derivable.
+macro_rules! keyed_header_or_skip {
+    () => {{
+        let header = header_or_skip!();
+        match fixed_key(&content_id(&header), u32_at(&header, field::NP_FLAGS)) {
+            Ok(key) => (header, key),
+            Err(_) => {
+                eprintln!(
+                    "skipped: this archive uses a supplied version key, which is not available"
+                );
+                return;
+            }
+        }
+    }};
+}
+
+/// Locate the source image the reference archive was built from, if present.
+fn find_source_iso() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("PSPBUILD_TEST_ISO") {
+        let path = PathBuf::from(path);
+        return path.is_file().then_some(path);
+    }
+    let plans = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plans");
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(plans)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
 /// The content ID as the header stores it: ASCII, NUL-padded to 0x30.
 fn content_id(header: &[u8; HEADER_SIZE]) -> String {
     let raw = &header[field::CONTENT_ID];
@@ -127,11 +268,7 @@ fn u32_at(header: &[u8; HEADER_SIZE], range: std::ops::Range<usize>) -> u32 {
 /// or in the range they are applied over, breaks it.
 #[test]
 fn the_header_hash_recomputes_from_the_header_itself() {
-    let header = header_or_skip!();
-    let np_flags = u32_at(&header, field::NP_FLAGS);
-
-    let version_key = fixed_key(&content_id(&header), np_flags)
-        .expect("a fixed-key archive derives its own version key");
+    let (header, version_key) = keyed_header_or_skip!();
 
     let computed = bbmac(BbMacType::Type3, &header[field::HASHED], Some(&version_key))
         .expect("BB-MAC over the header");
@@ -151,9 +288,7 @@ fn the_header_hash_recomputes_from_the_header_itself() {
 /// agree with the rest of the header.
 #[test]
 fn the_body_decrypts_to_coherent_fields() {
-    let header = header_or_skip!();
-    let np_flags = u32_at(&header, field::NP_FLAGS);
-    let version_key = fixed_key(&content_id(&header), np_flags).expect("version key");
+    let (header, version_key) = keyed_header_or_skip!();
     let header_key = key_at(&header, field::HEADER_KEY);
 
     let mut body = header[field::BODY].to_vec();
@@ -263,26 +398,24 @@ fn we_can_re_sign_a_real_header() {
 /// the ID has to be the one the derivation was actually run on.
 #[test]
 fn a_wrong_content_id_does_not_authenticate() {
-    let header = header_or_skip!();
-    let np_flags = u32_at(&header, field::NP_FLAGS);
+    let (header, version_key) = keyed_header_or_skip!();
 
     let mut wrong = content_id(&header).into_bytes();
     let last = wrong.len() - 1;
     wrong[last] ^= 0x01;
     let wrong = String::from_utf8(wrong).expect("still ASCII");
 
-    let key = fixed_key(&wrong, np_flags).expect("derivation still runs");
-    let computed = bbmac(BbMacType::Type3, &header[field::HASHED], Some(&key)).expect("BB-MAC");
+    let key = fixed_key(&wrong, u32_at(&header, field::NP_FLAGS)).expect("derivation still runs");
+    assert_ne!(key, version_key, "a changed content ID gave the same key");
 
+    let computed = bbmac(BbMacType::Type3, &header[field::HASHED], Some(&key)).expect("BB-MAC");
     assert_ne!(computed, key_at(&header, field::HEADER_HASH));
 }
 
 /// Every byte before the hash is covered by it.
 #[test]
 fn tampering_anywhere_in_the_hashed_range_is_detected() {
-    let header = header_or_skip!();
-    let np_flags = u32_at(&header, field::NP_FLAGS);
-    let version_key = fixed_key(&content_id(&header), np_flags).expect("version key");
+    let (header, version_key) = keyed_header_or_skip!();
     let stored = key_at(&header, field::HEADER_HASH);
 
     for offset in [0x00, 0x08, 0x0C, 0x10, 0x3F, 0x40, 0x9F, 0xA0, 0xBF] {
@@ -315,4 +448,208 @@ fn padding_and_signature_are_present_but_unhashed() {
         header[field::SIGNATURE].iter().any(|&b| b != 0),
         "signature field should not be empty"
     );
+}
+/// The block table has to decode to a coherent map of the archive.
+///
+/// This is the first test that touches the archive *body*. It reads every
+/// entry, undoes the obfuscation, and checks the offsets and sizes describe a
+/// gapless run of blocks. Nothing here needs a key: if the deobfuscation were
+/// wrong, the offsets would be noise and none of it would line up.
+///
+/// Blocks may be individually compressed, so a size below the block size is
+/// expected rather than suspicious. What must hold either way is that they are
+/// contiguous, that none exceeds a full block, and that they end where the
+/// section does.
+#[test]
+fn the_block_table_maps_the_whole_archive() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let mut expected_offset = layout.data_offset();
+    let mut compressed = 0usize;
+
+    for index in 0..layout.blocks as usize {
+        let entry = BlockEntry::from_bytes(&table[index * ENTRY_SIZE..])
+            .unwrap_or_else(|e| panic!("entry {index} does not decode: {e}"));
+
+        assert_eq!(
+            u64::from(entry.offset),
+            expected_offset,
+            "entry {index} does not follow the previous block"
+        );
+        assert!(
+            entry.size > 0 && entry.size <= layout.block_size(),
+            "entry {index} has an impossible size of {}",
+            entry.size
+        );
+        if entry.size < layout.block_size() {
+            compressed += 1;
+        }
+        expected_offset += u64::from(entry.size);
+    }
+
+    // An uncompressed archive lands exactly on the computed size. A compressed
+    // one is necessarily smaller, and cannot exceed it.
+    assert!(
+        expected_offset <= layout.archive_size(),
+        "blocks run past where an uncompressed archive would end"
+    );
+    if compressed == 0 {
+        assert_eq!(
+            expected_offset,
+            layout.archive_size(),
+            "an uncompressed archive should end exactly where its geometry says"
+        );
+    }
+    eprintln!(
+        "  {} blocks, {compressed} compressed, ending at {expected_offset:#X}",
+        layout.blocks
+    );
+}
+
+/// The data key in the header must be the MAC over the table that follows it.
+///
+/// This is what ties the body to the signed header: the key is a *result* of
+/// the finished table, so recomputing it proves the table has not been
+/// altered since the header was made.
+#[test]
+fn the_data_key_is_the_mac_over_the_block_table() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let computed = data_key(&table, &version_key).expect("MAC over the table");
+
+    // data_key sits at 0xB0, inside the region the header hash covers.
+    let stored: Key = archive.header[0xB0..0xC0].try_into().unwrap();
+    assert_eq!(
+        computed, stored,
+        "recomputed data key does not match the header"
+    );
+}
+
+/// Every sampled block must match the MAC its table entry carries.
+///
+/// This is the check that works on any archive, compressed or not: the MAC is
+/// over the block's *ciphertext*, so it needs no decompression and no
+/// knowledge of what the block contains. It validates BB-MAC, the version key
+/// and the table's offsets and sizes together against real data — if any one
+/// of them were wrong, the MACs would not reproduce.
+#[test]
+fn every_sampled_block_matches_its_mac() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+
+    for index in sample_indices(layout.blocks) {
+        let entry =
+            BlockEntry::from_bytes(&table[index as usize * ENTRY_SIZE..]).expect("entry decodes");
+        let block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+
+        let mac = bbmac(BbMacType::Type3, &block, Some(&version_key)).expect("BB-MAC");
+        assert_eq!(
+            mac, entry.mac,
+            "block {index} does not match its recorded MAC"
+        );
+    }
+}
+
+/// Decrypting the archive's blocks must give back the original image.
+///
+/// This is the strongest check available, and also the narrowest: it needs the
+/// very image the archive was built from, and it needs the blocks stored
+/// uncompressed, since LZRC is not implemented. When either is missing the
+/// test skips rather than pretending.
+#[test]
+fn blocks_decrypt_back_to_the_source_image() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let first = BlockEntry::from_bytes(&table).expect("first entry decodes");
+    if first.size != layout.block_size() {
+        eprintln!("skipped: this archive is compressed and LZRC is not implemented");
+        return;
+    }
+
+    let Some(iso_path) = find_source_iso() else {
+        eprintln!("skipped: no source ISO to compare against");
+        return;
+    };
+    let mut iso = std::fs::File::open(&iso_path).expect("source image opens");
+    if iso.metadata().unwrap().len() != layout.iso_size {
+        eprintln!("skipped: the available ISO is not the source of this archive");
+        return;
+    }
+
+    for index in sample_indices(layout.blocks) {
+        let entry =
+            BlockEntry::from_bytes(&table[index as usize * ENTRY_SIZE..]).expect("entry decodes");
+
+        let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+        decrypt_block(&mut block, &entry, &header_key, &version_key)
+            .unwrap_or_else(|e| panic!("block {index} does not decrypt: {e}"));
+
+        let mut original = vec![0u8; entry.size as usize];
+        iso.seek(SeekFrom::Start(
+            u64::from(index) * u64::from(layout.block_size()),
+        ))
+        .expect("seek in the image");
+        iso.read_exact(&mut original).expect("read from the image");
+
+        assert_eq!(
+            block, original,
+            "block {index} does not match the source image"
+        );
+    }
+}
+
+/// A block whose ciphertext has been altered must fail its MAC rather than
+/// decrypt to something.
+#[test]
+fn a_tampered_block_is_rejected() {
+    let mut archive = keyed_archive_or_skip!();
+    let layout = archive.layout();
+    let version_key = archive
+        .version_key()
+        .expect("checked by keyed_archive_or_skip");
+    let header_key = key_at(&archive.header, field::HEADER_KEY);
+
+    let table = archive.read_at(HEADER_SIZE as u64, layout.table_size() as usize);
+    let entry = BlockEntry::from_bytes(&table).expect("first entry decodes");
+
+    let mut block = archive.read_at(u64::from(entry.offset), entry.size as usize);
+    let victim = block.len() / 2;
+    block[victim] ^= 0x01;
+
+    assert!(
+        decrypt_block(&mut block, &entry, &header_key, &version_key).is_err(),
+        "a flipped bit in the ciphertext was not caught"
+    );
+}
+
+/// First, last, and a spread in between, so the position-dependent cipher seed
+/// is exercised at both small and large offsets.
+fn sample_indices(blocks: u32) -> Vec<u32> {
+    let last = blocks - 1;
+    let mut indices = vec![0, last / 3, last / 2, last];
+    if last >= 1 {
+        indices.push(1);
+        indices.push(last - 1);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    indices
 }
