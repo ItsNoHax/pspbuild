@@ -76,7 +76,7 @@ pub fn build_mg_eboot(request: &MgEbootRequest<'_>) -> Result<MgEboot> {
         // container, so say so instead.
         return Err(Error::InvalidPbp(
             "expected a PRX module but got a PBP container; \
-             use `encrypt-prx` to re-encrypt an existing EBOOT"
+             use `encrypt` to re-encrypt an existing EBOOT"
                 .into(),
         ));
     }
@@ -352,7 +352,7 @@ mod tests {
         let eboot = build_mg_eboot(&request(&module)).unwrap();
         let err = build_mg_eboot(&request(&eboot.data)).unwrap_err();
         assert!(
-            err.to_string().contains("encrypt-prx"),
+            err.to_string().contains("encrypt"),
             "unhelpful error: {err}"
         );
 

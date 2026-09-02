@@ -32,7 +32,7 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<(), Error> {
     match &cli.command {
-        Command::EncryptPrx {
+        Command::Encrypt {
             input,
             output,
             no_compress,

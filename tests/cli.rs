@@ -467,5 +467,5 @@ fn build_mg_refuses_an_eboot_where_a_module_belongs() {
         .args(["build-mg", eboot.to_str().unwrap()])
         .assert()
         .failure()
-        .stderr(contains("encrypt-prx"));
+        .stderr(contains("encrypt"));
 }

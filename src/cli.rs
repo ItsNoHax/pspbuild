@@ -19,8 +19,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Encrypt a PRX, or the DATA.PSP of an existing EBOOT.
-    #[command(visible_alias = "encrypt")]
-    EncryptPrx {
+    Encrypt {
         /// Input PRX, ELF or EBOOT.PBP.
         input: PathBuf,
 
@@ -193,11 +192,10 @@ mod tests {
 
     #[test]
     fn parses_the_documented_invocations() {
-        let cli =
-            Cli::try_parse_from(["pspbuild", "encrypt-prx", "in.prx", "-o", "out.prx"]).unwrap();
-        assert!(matches!(cli.command, Command::EncryptPrx { .. }));
+        let cli = Cli::try_parse_from(["pspbuild", "encrypt", "in.prx", "-o", "out.prx"]).unwrap();
+        assert!(matches!(cli.command, Command::Encrypt { .. }));
 
-        let cli = Cli::try_parse_from(["pspbuild", "-v", "encrypt-prx", "game.prx"]).unwrap();
+        let cli = Cli::try_parse_from(["pspbuild", "-v", "encrypt", "game.prx"]).unwrap();
         assert!(cli.verbose);
 
         assert!(Cli::try_parse_from(["pspbuild", "inspect", "a.prx"]).is_ok());
@@ -214,23 +212,15 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx", "a.prx", "--no-compress"]).is_ok());
+        assert!(Cli::try_parse_from(["pspbuild", "encrypt", "a.prx", "--no-compress"]).is_ok());
 
         // Missing operands must fail rather than default to something.
-        assert!(Cli::try_parse_from(["pspbuild", "encrypt-prx"]).is_err());
+        assert!(Cli::try_parse_from(["pspbuild", "encrypt"]).is_err());
         assert!(Cli::try_parse_from(["pspbuild", "build-mg"]).is_err());
         // A content ID is not optional: for a fixed-key title it derives the
         // encryption key, so there is no sensible default.
         assert!(Cli::try_parse_from(["pspbuild", "build-eg", "game.iso"]).is_err());
         assert!(Cli::try_parse_from(["pspbuild"]).is_err());
-    }
-
-    #[test]
-    fn encrypt_remains_available_under_its_old_name() {
-        // The tool shipped as `prx-encrypter encrypt`, and build scripts still
-        // spell it that way, so the alias has to keep working.
-        let cli = Cli::try_parse_from(["pspbuild", "encrypt", "game.prx"]).unwrap();
-        assert!(matches!(cli.command, Command::EncryptPrx { .. }));
     }
 
     #[test]

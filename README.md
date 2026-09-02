@@ -1,48 +1,17 @@
 # pspbuild
 
-A PSP EBOOT toolkit: encrypt PRX modules, build homebrew `EBOOT.PBP`
-containers, and inspect or verify what you or anyone else produced.
+A comprehensive PSP EBOOT toolkit for encrypting PRX modules, building homebrew `EBOOT.PBP` containers, and inspecting or verifying PSP executables.
 
-A from-scratch Rust replacement for the PSPSDK `PrxEncrypter` tool and the PBP
-handling around it. It implements the required KIRK cryptography locally, has no
-runtime dependencies, and — the reason it exists — **sizes its output from the
-actual payload instead of from a fixed-capacity template**.
+A from-scratch Rust implementation that performs KIRK cryptography locally with no runtime dependencies. The tool generates encrypted PRX headers dynamically from the input payload rather than relying on fixed-capacity templates.
 
-```text
-700 KiB PRX  ->  pspbuild     ->  ~700 KiB encrypted PRX
-700 KiB PRX  ->  legacy tool  ->    5.3 MiB encrypted PRX
-```
+## Features
 
-Output is confirmed booting on a retail PSP Slim running official firmware.
-
-## The size problem
-
-The legacy encrypter ships three prebuilt header templates and picks the
-smallest one that the input fits into. Every size field, and the integrity
-hashes covering them, are copied verbatim out of that template — so the output
-is padded to the template's capacity, not to the payload.
-
-Measured on a real module:
-
-| | size |
-| --- | ---: |
-| original module | 498,752 |
-| legacy `PrxEncrypter` | 5,583,952 |
-| `pspbuild` | 147,472 |
-
-AES and CMAC do not expand data; AES-CBC rounds up to the next 16-byte block
-and that is all. The multi-megabyte growth was entirely the fixed templates.
-
-This tool generates the header instead. Every size-dependent field is computed,
-and the integrity hashes are computed over the result, so the output is exactly:
-
-```text
-0x150 bytes of header  +  align16(payload size)
-```
-
-For why that is possible — the format only protects the header with an unkeyed
-SHA-1 and CMACs under a published key, so nothing needs to be copied from a
-signed original — see [docs/FORMAT.md](docs/FORMAT.md).
+- **Encrypt PRX modules** — Convert plaintext modules to encrypted PRX format compatible with retail PSP firmware
+- **Build EBOOT.PBP containers** — Create homebrew (MG) or Store-format (EG/NPDRM) packages from modules or UMD images
+- **Inspect files** — Examine PBP containers, UMD images, and encrypted PRX modules with detailed structure analysis
+- **Verify integrity** — Validate container structure, header hashes, CMAC tags, and payload integrity
+- **Extract and decrypt** — Unpack containers and recover original modules
+- **Library API** — All functionality available as a Rust library for integration into other tools
 
 ## Installation
 
@@ -50,38 +19,38 @@ signed original — see [docs/FORMAT.md](docs/FORMAT.md).
 cargo install --path .
 ```
 
-The result is a standalone binary. No Python, CMake, OpenSSL or runtime
-environment is required.
+Produces a standalone binary with no external runtime dependencies.
 
 ## Usage
 
 ```sh
-# Build a homebrew EBOOT.PBP from a module
+# Build a homebrew EBOOT.PBP from a module (MG category)
 pspbuild build-mg game.prx -o EBOOT.PBP --title "My Game" --icon0 ICON0.PNG
 
-# Encrypt a module, or an EBOOT.PBP (its DATA.PSP section is replaced)
-pspbuild encrypt-prx game.prx -o game.enc.prx
-pspbuild encrypt-prx EBOOT.PBP -o signed/EBOOT.PBP
+# Build a Store-format EBOOT.PBP from a UMD image (EG category)
+pspbuild build-eg game.iso -o EBOOT.PBP --title "My Game"
 
-# Show what a file is and what is inside it
+# Encrypt a PRX module or EBOOT.PBP (replaces DATA.PSP section)
+pspbuild encrypt game.prx -o game.enc.prx
+pspbuild encrypt EBOOT.PBP -o signed/EBOOT.PBP
+
+# Inspect file structure and contents
 pspbuild inspect EBOOT.PBP
-pspbuild inspect game.iso        # UMD images too, without loading them
+pspbuild inspect game.iso
 
-# Check the container, the header hash, both CMAC tags and the payload
+# Verify container integrity
 pspbuild verify EBOOT.PBP
 
-# Unpack a container
+# Extract container contents
 pspbuild extract EBOOT.PBP -o extracted/ --decrypt
 
-# Recover the original module
+# Decrypt an EBOOT.PBP to recover the original module
 pspbuild decrypt EBOOT.PBP -o game.prx
 ```
 
-`encrypt` remains an alias for `encrypt-prx`, so existing build scripts keep
-working.
+Normal execution produces no stdout output and exits with a non-zero code on failure, making it suitable for build scripts. Use `--verbose` for detailed output on stderr.
 
-Normal runs print nothing on stdout and exit non-zero on failure, so the tool
-drops straight into a build script. `--verbose` writes to stderr only.
+### Example Output
 
 ```console
 $ pspbuild -v build-mg game.prx --title "My Game"
@@ -94,8 +63,6 @@ DATA.PSP size:    147472 bytes
   DATA.PSP     147472 bytes
 Output size:      147872 bytes
 ```
-
-### Inspection
 
 ```console
 $ pspbuild inspect EBOOT.PBP
@@ -126,7 +93,7 @@ Executable:
   Tag:               0xADF305F0
 ```
 
-## Build-system integration
+## Build System Integration
 
 ```cmake
 add_custom_command(
@@ -136,9 +103,9 @@ add_custom_command(
 )
 ```
 
-## Library
+## Library Usage
 
-The CLI is a thin wrapper; the same functionality is available directly.
+The CLI is a thin wrapper; the core functionality is available as a library:
 
 ```rust
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
@@ -153,61 +120,50 @@ let eboot = build_mg_eboot(&MgEbootRequest {
 std::fs::write("EBOOT.PBP", &eboot.data)?;
 ```
 
-`encrypt_prx`, `decrypt_prx`, `verify_prx` and `inspect::inspect` are public, as
-are the format layers (`pbp`, `sfo`, `psp::header`, `psp::tag`, `kirk`,
-`crypto`) for tools that need them.
+Public APIs include `encrypt_prx`, `decrypt_prx`, `verify_prx`, `inspect::inspect`, and the format layers (`pbp`, `sfo`, `psp::header`, `psp::tag`, `kirk`, `crypto`) for building custom tools.
 
-## MG and EG
+## MG and EG Security Paths
 
-`CATEGORY` in `PARAM.SFO` decides which security path the firmware runs, and the
-two are genuinely different pipelines rather than options on one.
+The `CATEGORY` field in `PARAM.SFO` determines which security pipeline the firmware uses. These are distinct pipelines, not interchangeable options:
 
-- **MG** — memory-stick games, i.e. homebrew. `DATA.PSP` is an encrypted PRX and
-  there is no signature anywhere in the chain. **Implemented.**
-- **EG** — downloaded games. `DATA.PSP` is a signed NPDRM licence stub and
-  `DATA.PSAR` holds an `NPUMDIMG` encrypted ISO. **Implemented**: `build-eg`
-  turns a UMD image into a signed container, compressed by default, and it
-  boots on official firmware. The format was checked against four genuine Sony
-  Store archives rather than only against a reimplementation. See
-  [docs/EG.md](docs/EG.md).
+- **MG (Memory Stick Games)** — Homebrew applications. `DATA.PSP` contains an encrypted PRX with no signature chain. Fully implemented.
+- **EG (Extended Games / NPDRM)** — Store-format downloads. `DATA.PSP` holds a signed NPDRM license stub and `DATA.PSAR` contains an `NPUMDIMG` encrypted ISO. Fully implemented: `build-eg` creates signed containers that boot on official firmware, validated against genuine Sony Store archives.
 
-`pspbuild` refuses to run one pipeline against a container that asks for the
-other, and never silently falls back between them.
+`pspbuild` enforces the correct pipeline for each container type and never silently falls back between them.
 
 ## Documentation
 
-[docs/](docs/) describes the formats themselves rather than the code:
-[PBP.md](docs/PBP.md), [ISO.md](docs/ISO.md), [FORMAT.md](docs/FORMAT.md),
-[MG.md](docs/MG.md), [EG.md](docs/EG.md), [KEYS.md](docs/KEYS.md) and
-[COMPATIBILITY.md](docs/COMPATIBILITY.md).
+The `docs/` directory describes the PSP formats themselves:
 
-## Known limitations
+- [PBP.md](docs/PBP.md) — `EBOOT.PBP` container and `PARAM.SFO` structure
+- [ISO.md](docs/ISO.md) — PSP UMD images: ISO9660 layout as used on disc
+- [FORMAT.md](docs/FORMAT.md) — Encrypted PRX format: `~PSP` header, KIRK CMD1 container
+- [MG.md](docs/MG.md) — MG security path end-to-end
+- [EG.md](docs/EG.md) — EG/NPDRM path: building signed Store containers from UMD images
+- [NPUMDIMG.md](docs/NPUMDIMG.md) — EG archive format: header, block table, block cryptography
+- [KEYS.md](docs/KEYS.md) — Key/tag matrix and the relationship between category, tag, key, and format
+- [COMPATIBILITY.md](docs/COMPATIBILITY.md) — Tested platforms, firmware versions, and known gaps
 
-- **One header bit is forced.** `mod_attribute` always has bit `0x0200` set,
-  OR-ed into the module's own attributes: retail firmware will not load an
-  encrypted module without it. Isolated on hardware one field at a time, so
-  everything else is derived from the input. What the bit means is not known —
-  see [docs/FORMAT.md](docs/FORMAT.md#8-the-one-field-the-firmware-insists-on).
-- **Tested on one console.** A PSP Slim on official firmware, MG and EG alike.
-  Other models and firmware revisions are unverified.
-- **One tag.** Only `0xADF305F0` (the 2.80 demo scheme) is emitted. This is the
-  scheme the legacy templates used, and the one whose header carries no
-  signature.
-- **At most four segments**, which is what a `~PSP` header can describe.
+**Recommended reading order:** Start with [PBP.md](docs/PBP.md) for the container, then [FORMAT.md](docs/FORMAT.md) for the executable format, then [MG.md](docs/MG.md) for how they integrate. [KEYS.md](docs/KEYS.md) serves as a reference.
+
+## Known Limitations
+
+- **One header bit is enforced:** `mod_attribute` always has bit `0x0200` set (OR-ed into the module's own attributes). Retail firmware will not load an encrypted module without it. The semantic meaning of this bit is undocumented.
+- **Single hardware validation:** Tested on a PSP Slim running official firmware for both MG and EG paths. Other models and firmware revisions are unverified.
+- **Single tag scheme:** Only tag `0xADF305F0` (the 2.80 demo scheme) is emitted. This scheme's header carries no signature.
+- **Maximum four segments:** Limited by the `~PSP` header's segment descriptor capacity.
 
 ## Development
 
 ```sh
-cargo test        # crypto vectors, format, property and CLI tests
+cargo test              # Crypto vectors, format, property, and CLI tests
 cargo clippy --all-targets
 ```
 
-The crypto layer is tested against published vectors (NIST SP 800-38A for AES,
-RFC 4493 for CMAC, FIPS 180-1 for SHA-1) rather than against itself.
+The cryptographic layer is validated against published standards (NIST SP 800-38A for AES, RFC 4493 for CMAC, FIPS 180-1 for SHA-1) rather than self-referential tests.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-The KIRK constants are the long-published PSP keys found in every open-source
-PSP tool and emulator.
+The KIRK constants are the long-published PSP keys found in every open-source PSP tool and emulator.
