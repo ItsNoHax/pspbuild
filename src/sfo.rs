@@ -410,17 +410,29 @@ impl Default for Sfo {
 ///
 /// - `BOOTABLE` 1, or the launcher refuses to start it
 /// - `CATEGORY` `MG`, selecting the memory-stick-game pipeline
+/// - `DISC_ID` a placeholder disc ID; retail firmware refuses to boot an MG
+///   EBOOT that omits this (see below)
+/// - `DISC_VERSION` `1.00`, alongside `DISC_ID`
 /// - `MEMSIZE` 0, meaning the module does not ask for extra RAM
 /// - `PARENTAL_LEVEL` 1, the least restrictive
 /// - `PSP_SYSTEM_VER` the minimum firmware, `1.00` for plain homebrew
 /// - `REGION` 32768, the "all regions" bitmask
 /// - `TITLE` the name shown in the XMB
+///
+/// `DISC_ID`/`DISC_VERSION` were originally treated as disc-only fields, preserved
+/// when rebuilding on an existing container but never invented here. That was
+/// wrong: hardware testing on a retail PSP 3000 (6.61 OFW) showed an otherwise
+/// byte-identical, already-booting MG payload fails with "the data is corrupted"
+/// once these two keys are stripped from its `PARAM.SFO`. `UCJS10041`/`1.00` is
+/// the same placeholder `cargo-psp`'s `mksfo` has defaulted to for years.
 pub fn mg_param_sfo(title: &str) -> Result<Sfo> {
     Ok(Sfo {
         version: SFO_VERSION,
         entries: vec![
             SfoEntry::int("BOOTABLE", 1),
             SfoEntry::text_padded("CATEGORY", Category::Mg.as_str(), 4)?,
+            SfoEntry::text_padded("DISC_ID", "UCJS10041", 12)?,
+            SfoEntry::text_padded("DISC_VERSION", "1.00", 8)?,
             SfoEntry::int("MEMSIZE", 0),
             SfoEntry::int("PARENTAL_LEVEL", 1),
             SfoEntry::text_padded("PSP_SYSTEM_VER", "1.00", 8)?,
@@ -481,10 +493,10 @@ mod tests {
         let mut sfo = mg_param_sfo("Original").unwrap();
         sfo.set(SfoEntry::text_padded("TITLE", "Replaced", 128).unwrap());
         assert_eq!(sfo.get_text("TITLE").as_deref(), Some("Replaced"));
-        assert_eq!(sfo.entries.len(), 7);
+        assert_eq!(sfo.entries.len(), 9);
 
         sfo.set(SfoEntry::int("APP_VER", 3));
-        assert_eq!(sfo.entries.len(), 8);
+        assert_eq!(sfo.entries.len(), 10);
         let keys: Vec<&str> = sfo.entries.iter().map(|e| e.key.as_str()).collect();
         let mut sorted = keys.clone();
         sorted.sort_unstable();

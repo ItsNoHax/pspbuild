@@ -169,14 +169,22 @@ byte-identical output.
 | --- | --- | --- | --- |
 | `BOOTABLE` | u32 | 1 | the launcher refuses to start it otherwise |
 | `CATEGORY` | UTF-8 | `MG` | selects the memory-stick-game security path |
+| `DISC_ID` | UTF-8 | `UCJS10041` | retail firmware refuses to boot an MG EBOOT missing this — see below |
+| `DISC_VERSION` | UTF-8 | `1.00` | alongside `DISC_ID` |
 | `MEMSIZE` | u32 | 0 | the module does not request extra RAM |
 | `PARENTAL_LEVEL` | u32 | 1 | least restrictive |
 | `PSP_SYSTEM_VER` | UTF-8 | `1.00` | minimum firmware |
 | `REGION` | u32 | 32768 | the "all regions" bitmask |
 | `TITLE` | UTF-8 | shown in the XMB | |
 
-Retail discs additionally carry `DISC_ID`, `DISC_VERSION` and similar. Those are
-preserved when rebuilding on an existing container but never invented.
+`DISC_ID`/`DISC_VERSION` were originally treated as disc-only fields: preserved
+when rebuilding on an existing container, never invented for a fresh `build-mg`.
+That was wrong. Hardware testing (2026-09-02, retail PSP 3000, 6.61 OFW) found
+an MG EBOOT that boots fine fails with "the data is corrupted" the moment these
+two keys are stripped from its `PARAM.SFO` — everything else, including the
+`DATA.PSP` payload, held byte-identical. `UCJS10041` is the same placeholder
+`cargo-psp`'s `mksfo` has defaulted to for years, at the same 12-byte reservation;
+`DISC_VERSION` shares `PSP_SYSTEM_VER`'s 8-byte one.
 
 ## 5. What `pspbuild` does with this
 
