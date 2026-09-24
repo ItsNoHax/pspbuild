@@ -1,41 +1,16 @@
-# pspbuild documentation
+# Documentation
 
-These documents describe the PSP formats themselves, not the code that
-implements them. Where a claim was established empirically — on hardware, or
-against a real file — that is stated.
+Format specifications for the files `pspbuild` reads and writes. Claims verified on hardware or against genuine Sony files are marked as such.
 
-| document | covers |
+| Document | Contents |
 | --- | --- |
-| [PBP.md](PBP.md) | the `EBOOT.PBP` container and `PARAM.SFO`, byte by byte |
-| [ISO.md](ISO.md) | PSP UMD images: ISO9660 as a disc actually uses it, and the PSP layout |
-| [FORMAT.md](FORMAT.md) | the encrypted PRX: the `~PSP` header, the KIRK CMD1 container, and why dynamic sizing is possible |
-| [MG.md](MG.md) | the MG security path end to end, and how it differs from the legacy tools |
-| [EG.md](EG.md) | the EG/NPDRM path: building a signed Store-format EBOOT from a UMD |
-| [NPUMDIMG.md](NPUMDIMG.md) | the EG archive format, byte by byte — header, block table, block crypto — checked against genuine Sony archives |
-| [KEYS.md](KEYS.md) | the key/tag matrix, and the distinction between category, tag, key and format |
-| [COMPATIBILITY.md](COMPATIBILITY.md) | what has been tested, on what, and what has not |
+| [PBP.md](PBP.md) | `EBOOT.PBP` container and `PARAM.SFO` |
+| [ISO.md](ISO.md) | UMD images: ISO9660 subset and PSP layout |
+| [FORMAT.md](FORMAT.md) | Encrypted PRX: `~PSP` header, KIRK CMD1, validated fields |
+| [MG.md](MG.md) | MG pipeline |
+| [EG.md](EG.md) | EG pipeline: UMD image to signed NPDRM EBOOT |
+| [NPUMDIMG.md](NPUMDIMG.md) | EG archive: header, block table, BB-MAC, BB-Cipher, ECDSA |
+| [KEYS.md](KEYS.md) | Categories, tags and keys |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | Hardware, emulator and reference-tool results |
 
-## Where the PRX and KIRK specifications live
-
-The project plan lists `PRX.md` and `KIRK.md` as separate documents. Both
-subjects are covered in [FORMAT.md](FORMAT.md), which was written first and
-treats them together — the `~PSP` header and the KIRK CMD1 container it wraps
-are hard to explain apart, since the header's whole purpose is to scatter the
-KIRK header's fields. Splitting them would mean two documents that each only
-make sense with the other open.
-
-[NPUMDIMG.md](NPUMDIMG.md) now exists: the archive format is specified, derived
-from a reference archive and confirmed by differential runs. Its cryptographic
-primitives are implemented in `src/npdrm` and verified against a real archive's
-header; nothing yet *writes* an archive.
-
-`NPDRM.md` is still folded into [EG.md](EG.md). BB-MAC, BB-Cipher and the fixed
-key are now characterised, but they are documented where they are used —
-[NPUMDIMG.md §3 and §4](NPUMDIMG.md) — rather than in a file of their own,
-since NPUMDIMG is so far the only thing that uses them.
-
-## Reading order
-
-Start with [PBP.md](PBP.md) for the container, then [FORMAT.md](FORMAT.md) for
-what goes inside it, then [MG.md](MG.md) for how the two fit together.
-[KEYS.md](KEYS.md) is a reference rather than a narrative.
+Suggested order: PBP → FORMAT → MG, then EG → NPUMDIMG. KEYS is reference material.

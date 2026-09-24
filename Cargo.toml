@@ -2,7 +2,7 @@
 name = "pspbuild"
 version = "0.1.0"
 edition = "2024"
-description = "PSP EBOOT toolkit: PRX encryption, PBP containers and MG EBOOT construction, sized from the payload rather than a fixed template"
+description = "PSP EBOOT toolkit: PRX encryption, MG and EG (NPDRM) EBOOT.PBP construction, inspection and verification"
 license = "MIT"
 repository = "https://github.com/ItsNoHax/pspbuild"
 readme = "README.md"
