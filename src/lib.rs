@@ -19,6 +19,7 @@
 //!           -> size the container -> KIRK CMD0 -> ~PSP header -> file
 //! ```
 
+pub mod audio;
 pub mod crypto;
 pub mod eg;
 pub mod error;
@@ -240,6 +241,8 @@ pub struct Verification {
     pub recovered_size: u32,
     /// Whether the recovered payload is a parseable PSP module.
     pub module: Option<ModuleInfo>,
+    /// The validator's view of the container's `SND0.AT3`, when it has one.
+    pub snd0: Option<audio::At3Report>,
 }
 
 /// Verify an encrypted PRX as thoroughly as the format allows.
@@ -249,8 +252,22 @@ pub struct Verification {
 /// result as a PSP module.
 pub fn verify_prx(data: &[u8]) -> Result<Verification> {
     let mut checks = Vec::new();
+    let mut snd0 = None;
     if Pbp::is_pbp(data) {
+        let container = Pbp::parse(data)?;
         checks.push("PBP container structure".into());
+        let music = container.section(pbp::PbpSection::Snd0At3);
+        if !music.is_empty() {
+            let report = audio::inspect_at3(music);
+            if let Some(problems) = report.failure_summary(false) {
+                return Err(Error::IntegrityCheck(format!("SND0.AT3: {problems}")));
+            }
+            checks.push(format!(
+                "SND0.AT3 is ATRAC3 the XMB can play ({} frames)",
+                report.frames
+            ));
+            snd0 = Some(report);
+        }
     }
     let data = &*module_bytes(data)?;
 
@@ -327,6 +344,7 @@ pub fn verify_prx(data: &[u8]) -> Result<Verification> {
         checks,
         recovered_size: recovered.len() as u32,
         module,
+        snd0,
     })
 }
 

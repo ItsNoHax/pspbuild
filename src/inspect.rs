@@ -165,6 +165,8 @@ pub struct ContainerReport {
     /// Why `PARAM.SFO` could not be read, when it could not.
     pub param_sfo_error: Option<String>,
     pub sections: Vec<SectionReport>,
+    /// The validator's view of `SND0.AT3`, when there is one.
+    pub snd0: Option<crate::audio::At3Report>,
 }
 
 /// One asset the EG pipeline looks for in an image.
@@ -257,6 +259,7 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
     let mut sections = Vec::with_capacity(crate::pbp::SECTION_COUNT);
     let mut param_sfo_raw = Vec::new();
     let mut data_psp_prefix = Vec::new();
+    let mut snd0 = None;
 
     for section in PbpSection::ALL {
         let (offset, size) = layout.section(section);
@@ -270,6 +273,13 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
         match section {
             PbpSection::ParamSfo => param_sfo_raw = prefix,
             PbpSection::DataPsp => data_psp_prefix = prefix,
+            PbpSection::Snd0At3 if size > 0 => {
+                snd0 = Some(if size > STREAM_SECTION_LIMIT {
+                    crate::audio::validate::oversized(size as usize)
+                } else {
+                    crate::audio::inspect_at3(&prefix)
+                });
+            }
             _ => {}
         }
     }
@@ -281,6 +291,7 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
         system_version: None,
         param_sfo_error: None,
         sections,
+        snd0,
     };
 
     let mut param_sfo = None;
@@ -427,6 +438,10 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
                 format: FileFormat::detect(pbp.section(section)),
             })
             .collect(),
+        snd0: {
+            let snd0 = pbp.section(PbpSection::Snd0At3);
+            (!snd0.is_empty()).then(|| crate::audio::inspect_at3(snd0))
+        },
     };
 
     let mut param_sfo = None;

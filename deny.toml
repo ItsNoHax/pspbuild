@@ -1,0 +1,33 @@
+# License gate: `cargo deny check licenses`.
+#
+# pspbuild is MIT and must stay free of copyleft code, so only permissive
+# licences are accepted. Anything else fails the check: MPL-2.0 (which rules
+# out symphonia), LGPL, GPL. A crate offered under a choice of licences passes
+# when one of the choices is on this list.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+# The list is a policy, not an inventory: a permitted licence need not be in
+# use today.
+unused-allowed-license = "allow"
+
+# unicode-ident is MIT or Apache-2.0 *and* Unicode-3.0, for its Unicode data
+# tables. Unicode-3.0 is a permissive, OSI-approved notice licence. The crate
+# is a build-time dependency of the derive macros and is not linked into
+# pspbuild.
+[[licenses.exceptions]]
+crate = "unicode-ident"
+allow = ["Unicode-3.0"]

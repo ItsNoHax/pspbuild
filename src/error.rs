@@ -58,6 +58,12 @@ pub enum Error {
     #[error("compression failed: {0}")]
     Compression(String),
 
+    #[error("invalid audio: {0}")]
+    InvalidAudio(String),
+
+    #[error("unsupported audio: {0}")]
+    UnsupportedAudio(String),
+
     #[error("integrity check failed: {0}")]
     IntegrityCheck(String),
 

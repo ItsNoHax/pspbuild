@@ -8,7 +8,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, derive_output_path};
+use cli::{AudioCommand, Cli, Command, derive_output_path};
+use pspbuild::audio::{At3Report, Snd0, Snd0Options, Snd0Source, make_snd0};
 use pspbuild::inspect::{FileFormat, Inspection, IsoReport, inspect, inspect_iso, inspect_pbp};
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
 use pspbuild::pbp::{Pbp, PbpSection};
@@ -87,8 +88,22 @@ fn run(cli: &Cli) -> Result<(), Error> {
             pic0,
             pic1,
             snd0,
+            snd0_start,
+            snd0_duration,
         } => {
             let module = read(input)?;
+            let snd0 = snd0
+                .as_deref()
+                .map(|path| {
+                    let options = Snd0Options {
+                        start: *snd0_start,
+                        duration: *snd0_duration,
+                    };
+                    let converted = make_snd0(&read(path)?, &options)?;
+                    report_snd0(cli.verbose, path, &converted);
+                    Ok::<_, Error>(converted.data)
+                })
+                .transpose()?;
             let base_bytes = base.as_deref().map(read).transpose()?;
             let base_pbp = base_bytes.as_deref().map(Pbp::parse).transpose()?;
 
@@ -102,7 +117,7 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 icon1: icon1.as_deref().map(read).transpose()?,
                 pic0: pic0.as_deref().map(read).transpose()?,
                 pic1: pic1.as_deref().map(read).transpose()?,
-                snd0: snd0.as_deref().map(read).transpose()?,
+                snd0,
             })?;
 
             let out_path = output
@@ -202,6 +217,39 @@ fn run(cli: &Cli) -> Result<(), Error> {
             Ok(())
         }
 
+        Command::Audio { command } => match command {
+            AudioCommand::Snd0 {
+                input,
+                output,
+                start,
+                duration,
+            } => {
+                let options = Snd0Options {
+                    start: *start,
+                    duration: *duration,
+                };
+                let snd0 = make_snd0(&read(input)?, &options)?;
+                let out_path = output.clone().unwrap_or_else(|| sibling(input, "SND0.AT3"));
+                report_snd0(cli.verbose, input, &snd0);
+                if cli.verbose {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "Output:           {}",
+                        out_path.display()
+                    );
+                }
+                write(&out_path, &snd0.data)
+            }
+            AudioCommand::Inspect { input, strict } => {
+                let report = pspbuild::audio::inspect_at3(&read(input)?);
+                print_at3(&mut std::io::stdout().lock(), &report, "");
+                match report.failure_summary(*strict) {
+                    Some(problems) => Err(Error::InvalidAudio(problems)),
+                    None => Ok(()),
+                }
+            }
+        },
+
         Command::Inspect { input } => {
             // A UMD runs to 1.8 GB and an EG EBOOT to over a gigabyte, so
             // classify from a prefix and stream rather than reading the whole
@@ -230,6 +278,11 @@ fn run(cli: &Cli) -> Result<(), Error> {
             let mut out = std::io::stdout().lock();
             for check in &result.checks {
                 let _ = writeln!(out, "VALID: {check}");
+            }
+            if let Some(report) = &result.snd0 {
+                for warning in report.warnings() {
+                    let _ = writeln!(out, "WARNING: SND0.AT3: {}", warning.message);
+                }
             }
             let _ = writeln!(out, "Recovered size:      {} bytes", result.recovered_size);
             if let Some(module) = &result.module {
@@ -331,6 +384,11 @@ fn print_inspection(report: &Inspection) {
             }
         }
         let _ = writeln!(out);
+        if let Some(snd0) = &container.snd0 {
+            let _ = writeln!(out, "SND0.AT3:");
+            print_at3(&mut out, snd0, "  ");
+            let _ = writeln!(out);
+        }
     }
 
     // A standalone PARAM.SFO has no container to list it under, so show the
@@ -374,6 +432,159 @@ fn print_inspection(report: &Inspection) {
             let _ = writeln!(out, "Executable:          {error}");
         }
         (None, None) => {}
+    }
+}
+
+/// Tell the user what happened to an SND0 source: notices always, detail
+/// only when asked.
+fn report_snd0(verbose: bool, path: &Path, snd0: &Snd0) {
+    let mut err = std::io::stderr().lock();
+    for notice in &snd0.notices {
+        let _ = writeln!(err, "warning: {}: {notice}", path.display());
+    }
+    if !verbose {
+        return;
+    }
+    match &snd0.source {
+        Snd0Source::PassedThrough => {
+            let _ = writeln!(
+                err,
+                "SND0:             {} is already a playable SND0, used as-is",
+                path.display()
+            );
+        }
+        Snd0Source::Encoded {
+            format,
+            sample_rate,
+            channels,
+            input_seconds,
+            ..
+        } => {
+            let _ = writeln!(
+                err,
+                "SND0 source:      {format}, {sample_rate} Hz, {channels} channel{}, {input_seconds:.2} s",
+                if *channels == 1 { "" } else { "s" }
+            );
+            let _ = writeln!(
+                err,
+                "SND0:             ATRAC3 LP4, {} frames, {:.2} s, {} bytes",
+                snd0.report.frames,
+                snd0.report.duration_seconds(),
+                snd0.data.len()
+            );
+        }
+    }
+}
+
+/// Print an AT3 report, each line prefixed with `indent`.
+fn print_at3(out: &mut impl Write, report: &At3Report, indent: &str) {
+    let line = |out: &mut dyn Write, label: &str, value: String| {
+        let _ = writeln!(out, "{indent}{:<21}{value}", format!("{label}:"));
+    };
+    line(out, "File size", format!("{} bytes", report.file_size));
+    if !report.chunks.is_empty() {
+        let _ = writeln!(out, "{indent}Chunks:");
+        for chunk in &report.chunks {
+            let _ = writeln!(
+                out,
+                "{indent}  {:<5} offset {:#010X}  {:>10} bytes",
+                chunk.id, chunk.offset, chunk.size
+            );
+        }
+    }
+    if let Some(tag) = report.format_tag {
+        let codec = if tag == pspbuild::audio::riff::FORMAT_ATRAC3 {
+            "ATRAC3"
+        } else {
+            "not ATRAC3"
+        };
+        line(out, "Codec", format!("{codec} ({tag:#06X})"));
+    }
+    if let Some(rate) = report.sample_rate {
+        line(out, "Sample rate", format!("{rate} Hz"));
+    }
+    if let Some(channels) = report.channels {
+        line(out, "Channels", channels.to_string());
+    }
+    if let (Some(bps), Some(align)) = (report.bitrate_bps(), report.block_align) {
+        let profile = match align {
+            192 => " (LP4)",
+            384 => " (LP2)",
+            _ => "",
+        };
+        line(
+            out,
+            "Bitrate",
+            format!("{bps} bps{profile}, {align}-byte frames"),
+        );
+    }
+    if let Some(joint) = report.joint_stereo {
+        line(
+            out,
+            "Stereo",
+            if joint {
+                "joint".into()
+            } else {
+                "independent channels".into()
+            },
+        );
+    }
+    if report.format_tag.is_some() {
+        line(
+            out,
+            "fmt chunk",
+            if report.fmt_matches_known_good {
+                "identical to a known-good LP4 SND0".into()
+            } else {
+                "differs from the known-good LP4 SND0".into()
+            },
+        );
+    }
+    if report.frames > 0 {
+        line(
+            out,
+            "Frames",
+            format!("{} ({:.2} s)", report.frames, report.duration_seconds()),
+        );
+        let bands = |counts: &[usize; 4]| {
+            counts
+                .iter()
+                .enumerate()
+                .filter(|&(_, &n)| n > 0)
+                .map(|(b, n)| {
+                    let bands = b + 1;
+                    format!("{bands} band{} in {n}", if bands == 1 { "" } else { "s" })
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if report.frames_decoded > 0 {
+            line(out, "Coded QMF bands", bands(&report.bands_first_unit));
+            line(
+                out,
+                if report.joint_stereo == Some(false) {
+                    "  right channel"
+                } else {
+                    "  side channel"
+                },
+                bands(&report.bands_second_unit),
+            );
+        }
+    }
+    let verdict = if !report.is_playable() {
+        "NOT PLAYABLE"
+    } else if report.is_strictly_valid() {
+        "playable; matches the profile pspbuild writes"
+    } else {
+        "playable, with warnings"
+    };
+    line(out, "Verdict", verdict.into());
+    for finding in &report.findings {
+        let label = match finding.severity {
+            pspbuild::audio::Severity::Error => "ERROR",
+            pspbuild::audio::Severity::Warning => "WARNING",
+        };
+        let _ = writeln!(out, "{indent}{label}: {}", finding.message);
     }
 }
 

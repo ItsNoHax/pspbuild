@@ -8,6 +8,13 @@
 | PSP 3000, OFW 6.61 | used for the `DISC_ID` test ([PBP.md §3.2](PBP.md)) | untested |
 | Other models / firmware | untested | untested |
 
+SND0 audio ([AUDIO.md](AUDIO.md)):
+
+| Target | Result |
+| --- | --- |
+| PSP Slim, 6.61 + ARK | an LP4 SND0 from an external encoder plays; `pspbuild`'s header is byte-identical to it |
+| any | SND0 encoded by `pspbuild audio snd0`: **untested** |
+
 ### 1.1 MG boot tests
 
 | Build | Establishes |
@@ -52,6 +59,9 @@ PPSSPP is more permissive than the firmware (it accepted builds the console reje
 | `sign_np` | EG output compared | section offsets and size match with `--no-compress` (`tests/archive.rs`) |
 | Sony EG archives (4) | → `pspbuild` | signatures verify; fixed-key archive fully recomputed ([NPUMDIMG.md §7](NPUMDIMG.md)) |
 | `ebootsigner` | — | not tested |
+| Sony SND0 (LP2, 3 connection apps) | → `pspbuild` | playable, 3 warnings; decoder agrees with ffmpeg to 131 dB (`tests/audio.rs`) |
+| Known-good LP4 SND0 | → `pspbuild` | passes strict; fmt chunk identical to `pspbuild`'s |
+| ffmpeg | `pspbuild` SND0 → ffmpeg | decodes identically to `pspbuild`'s decoder (~132 dB) |
 
 `pspbuild` MG output is not byte-identical to `PrxEncrypter` output by design ([FORMAT.md §5](FORMAT.md)).
 
@@ -69,16 +79,19 @@ Changing the key domain changes every ciphertext byte without changing structure
 - EG: fixed-key content IDs only; supplied version keys are not supported.
 - EG: `STARTDAT` and `OPNSSMP` are not boot-tested.
 - PSPemu / `PBOOT.PBP` is out of scope.
+- SND0: encoder output not yet played on hardware; no gain control (transients may pre-echo); no AAC/M4A or Opus input.
 
 ## 6. Tests
 
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo deny check licenses
 ```
 
 - Crypto: NIST SP 800-38A (AES), RFC 4493 (CMAC), FIPS 180-1 (SHA-1).
 - Format: round-trip, every single-byte header corruption detected, truncation at every length without panic.
 - Fixture tests (`genuine`, `iso`, `npdrm`, `archive`) skip when fixtures are absent; see the [README](../README.md#development).
+- Audio (`audio`, `audio_cli`): golden tests against Sony and known-good SND0s, negative tests per validator rule, quality floors on four test signals, and ffmpeg as an optional oracle.
 
-CI runs build and tests on Linux, macOS and Windows, plus `cargo fmt --check` and clippy with `-D warnings`.
+CI runs build and tests on Linux, macOS and Windows, plus `cargo fmt --check`, clippy with `-D warnings`, and `cargo deny check licenses`.

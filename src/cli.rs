@@ -69,9 +69,16 @@ pub enum Command {
         /// Background image.
         #[arg(long, value_name = "FILE")]
         pic1: Option<PathBuf>,
-        /// XMB background audio.
+        /// XMB background music: an SND0.AT3, or a WAV, FLAC, Ogg Vorbis or
+        /// MP3 file to convert.
         #[arg(long, value_name = "FILE")]
         snd0: Option<PathBuf>,
+        /// Seconds into --snd0 to start from.
+        #[arg(long, value_name = "SECONDS", requires = "snd0")]
+        snd0_start: Option<f64>,
+        /// Seconds of --snd0 to keep; at most 55.
+        #[arg(long, value_name = "SECONDS", requires = "snd0")]
+        snd0_duration: Option<f64>,
     },
 
     /// Build an EG EBOOT.PBP from a PSP ISO.
@@ -104,6 +111,12 @@ pub enum Command {
         /// OPNSSMP.BIN module to carry, encrypted under the version key.
         #[arg(long, value_name = "FILE")]
         opnssmp: Option<PathBuf>,
+    },
+
+    /// Convert and check XMB audio.
+    Audio {
+        #[command(subcommand)]
+        command: AudioCommand,
     },
 
     /// Report what a file is and what it contains.
@@ -140,6 +153,37 @@ pub enum Command {
         /// Output file. Defaults to the input with a `.dec.prx` suffix.
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AudioCommand {
+    /// Convert a WAV, FLAC, Ogg Vorbis or MP3 file to an SND0.AT3.
+    Snd0 {
+        /// Input audio.
+        input: PathBuf,
+
+        /// Output file. Defaults to `SND0.AT3` beside the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Seconds into the input to start from.
+        #[arg(long, value_name = "SECONDS")]
+        start: Option<f64>,
+
+        /// Seconds to keep; at most 55. Longer input is cut to fit.
+        #[arg(long, value_name = "SECONDS")]
+        duration: Option<f64>,
+    },
+
+    /// Explain an AT3 file and check it against what the XMB plays.
+    Inspect {
+        /// AT3 file to inspect.
+        input: PathBuf,
+
+        /// Also fail on differences from the profile pspbuild writes.
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -213,6 +257,17 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["pspbuild", "encrypt", "a.prx", "--no-compress"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["pspbuild", "audio", "snd0", "theme.flac", "-o", "SND0.AT3"])
+                .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["pspbuild", "audio", "inspect", "SND0.AT3", "--strict"]).is_ok()
+        );
+        // Trimming only means something alongside a source.
+        assert!(
+            Cli::try_parse_from(["pspbuild", "build-mg", "game.prx", "--snd0-start", "3"]).is_err()
+        );
 
         // Missing operands must fail rather than default to something.
         assert!(Cli::try_parse_from(["pspbuild", "encrypt"]).is_err());
