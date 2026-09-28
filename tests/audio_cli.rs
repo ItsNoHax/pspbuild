@@ -69,6 +69,16 @@ fn audio_snd0_converts_quietly() {
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::is_empty());
     assert!(inspect_at3(&std::fs::read(&output).unwrap()).is_strictly_valid());
+    cli()
+        .args(["audio", "inspect", s(&output)])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Loop:                samples 1024 to 89223 (2.00 s), forever",
+        ))
+        .stdout(contains(
+            "Verdict:             playable; matches the profile pspbuild writes",
+        ));
 }
 
 #[test]
@@ -94,7 +104,7 @@ fn audio_snd0_warns_when_it_cuts() {
         .assert()
         .success()
         .stderr(contains("warning:"))
-        .stderr(contains("cut to the first 54.98 s"));
+        .stderr(contains("cut to the first 54.94 s"));
 }
 
 #[test]
@@ -121,9 +131,9 @@ fn audio_inspect_explains_a_good_file() {
         .stdout(contains("66144 bps (LP4), 192-byte frames"))
         .stdout(contains("Frames:              1103 (25.61 s)"))
         .stdout(contains("Coded QMF bands:     3 bands in 1103"))
-        .stdout(contains(
-            "Verdict:             playable; matches the profile pspbuild writes",
-        ));
+        .stdout(contains("Loop:                none"))
+        .stdout(contains("Verdict:             playable, with warnings"))
+        .stdout(contains("WARNING: it has no loop point (smpl chunk)"));
 }
 
 #[test]
@@ -191,7 +201,7 @@ fn build_mg_converts_snd0_and_inspect_and_verify_check_it() {
         .assert()
         .success()
         .stdout(contains(
-            "VALID: SND0.AT3 is ATRAC3 the XMB can play (130 frames)",
+            "VALID: SND0.AT3 is ATRAC3 the XMB can play (132 frames)",
         ));
 }
 
@@ -235,7 +245,7 @@ fn build_mg_trims_snd0_on_request() {
         .success();
     let data = std::fs::read(&eboot).unwrap();
     let report = inspect_at3(Pbp::parse(&data).unwrap().section(PbpSection::Snd0At3));
-    assert_eq!(report.frames, (2.0f64 * 44_100.0 / 1024.0).ceil() as usize);
+    assert_eq!(report.frames, pspbuild::audio::frames_for(88_200));
 }
 
 #[test]

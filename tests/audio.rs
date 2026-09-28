@@ -14,13 +14,13 @@
 use std::path::{Path, PathBuf};
 
 use pspbuild::audio::atrac3::bits::BitWriter;
-use pspbuild::audio::atrac3::decoder::{Decoder, Layout, decode_all};
+use pspbuild::audio::atrac3::decoder::{Layout, decode_all};
 use pspbuild::audio::atrac3::dsp::qmf_analysis_periodic;
 use pspbuild::audio::atrac3::encoder::{self, FRAME_BYTES};
 use pspbuild::audio::atrac3::tables::FRAME_SAMPLES;
 use pspbuild::audio::pcm::{self, Pcm};
-use pspbuild::audio::riff::{self, LP4_FMT, write_lp4};
-use pspbuild::audio::{Snd0Options, Snd0Source, encode_snd0, inspect_at3, make_snd0};
+use pspbuild::audio::riff::{self, LOOP_DELAY, LP4_FMT, write_lp4, write_lp4_looped};
+use pspbuild::audio::{Snd0Options, Snd0Source, encode_snd0, frames_for, inspect_at3, make_snd0};
 use pspbuild::pbp::{Pbp, PbpSection};
 
 const LP4: Layout = Layout {
@@ -131,22 +131,16 @@ fn band_snr_db(reference: &[f32], test: &[f32]) -> [f64; 3] {
     [0, 1, 2].map(|b| 10.0 * (energy(&r[b]) / energy(&e[b]).max(1e-30)).log10())
 }
 
-/// Decode frames the way a looping player does: the second pass is steady
-/// state, with the end of the track as the history of its start.
-fn decode_looped(frames: &[u8]) -> [Vec<f32>; 2] {
-    let mut decoder = Decoder::new(LP4);
-    let mut out = [[0f32; FRAME_SAMPLES]; 2];
-    let mut pcm = [Vec::new(), Vec::new()];
-    for pass in 0..2 {
-        for frame in frames.chunks_exact(FRAME_BYTES) {
-            decoder.decode(frame, &mut out).unwrap();
-            if pass == 1 {
-                pcm[0].extend_from_slice(&out[0]);
-                pcm[1].extend_from_slice(&out[1]);
-            }
-        }
-    }
-    pcm
+/// Decode a file pspbuild wrote and return just its loop, the samples the
+/// `fact` chunk names.
+fn decode_loop(file: &[u8]) -> [Vec<f32>; 2] {
+    let fact = riff::parse(file)
+        .unwrap()
+        .fact
+        .expect("pspbuild writes a fact chunk");
+    let (start, end) = (fact.delay as usize, (fact.delay + fact.samples) as usize);
+    let [l, r] = decode_all(data_chunk(file), LP4).unwrap();
+    [l[start..end].to_vec(), r[start..end].to_vec()]
 }
 
 // --- test signals ------------------------------------------------------------
@@ -277,10 +271,9 @@ fn round_trip(signal: Pcm) -> ([Vec<f32>; 2], [Vec<f32>; 2], Vec<u8>) {
 
     let mut reference = signal;
     pcm::lowpass(&mut reference);
-    let decoded = decode_looped(data_chunk(&file));
-    let n = reference.len();
+    let decoded = decode_loop(&file);
+    assert_eq!(decoded[0].len(), reference.len());
     let reference = [reference.channels[0].clone(), reference.channels[1].clone()];
-    let decoded = [decoded[0][..n].to_vec(), decoded[1][..n].to_vec()];
     (reference, decoded, file)
 }
 
@@ -291,7 +284,12 @@ fn known_good_fixture_is_what_the_plan_says() {
     let file = known_good();
     assert_eq!(file.len(), 211_836);
     let report = inspect_at3(&file);
-    assert!(report.is_strictly_valid(), "{:?}", report.findings);
+    // It plays; it only lacks the loop point that makes the XMB repeat it.
+    let findings: Vec<_> = report.findings.iter().map(|f| f.message.as_str()).collect();
+    assert_eq!(
+        findings,
+        ["it has no loop point (smpl chunk), so the XMB plays it once and then stops"]
+    );
     assert_eq!(report.frames, 1103);
     assert_eq!(report.bitrate_bps(), Some(66_144));
     assert!((report.duration_seconds() - 25.61).abs() < 0.01);
@@ -315,7 +313,7 @@ fn our_fmt_chunk_is_the_known_good_one_byte_for_byte() {
         .iter()
         .map(|c| c.name())
         .collect();
-    assert_eq!(names, ["fmt", "data"]);
+    assert_eq!(names, ["fmt", "fact", "smpl", "data"]);
 }
 
 #[test]
@@ -382,14 +380,12 @@ fn retail_and_known_good_files_survive_a_round_trip_through_our_codec() {
         assert!(matches!(snd0.source, Snd0Source::Encoded { .. }));
         let report = inspect_at3(&snd0.data);
         assert!(report.is_strictly_valid(), "{name}: {:?}", report.findings);
-        let [l, r] = decode_all(data_chunk(&file), layout_of(&file)).unwrap();
-        let mut reference = Pcm {
-            sample_rate: 44_100,
-            channels: vec![l, r],
-        };
+        // The track as the input decoder sees it: just the samples its fact
+        // chunk names, when it has one.
+        let (_, mut reference) = pspbuild::audio::input::decode(&file).unwrap();
         pcm::trim(&mut reference, 0.0, Some(6.0));
         pcm::lowpass(&mut reference);
-        let ours = decode_looped(data_chunk(&snd0.data));
+        let ours = decode_loop(&snd0.data);
         let n = reference.len();
         let snr = snr_db(&reference.channels[0], &ours[0][..n]);
         eprintln!("{name}: re-encoded at {snr:.1} dB SNR");
@@ -436,7 +432,11 @@ fn silent_frame(bands: u32) -> [u8; FRAME_BYTES] {
 }
 
 fn silent_file(frames: usize) -> Vec<u8> {
-    write_lp4(&silent_frame(3).repeat(frames))
+    // A loop that fills the frames the way pspbuild lays them out.
+    write_lp4_looped(
+        &silent_frame(3).repeat(frames),
+        ((frames - 2) * 1024) as u32,
+    )
 }
 
 /// Replace the fmt body of an LP4 file.
@@ -498,20 +498,53 @@ fn lp2_is_flagged() {
 }
 
 #[test]
-fn a_fact_chunk_is_flagged() {
-    let plain = silent_file(20);
-    let mut file = plain[..52].to_vec();
-    file.extend_from_slice(b"fact");
-    file.extend_from_slice(&8u32.to_le_bytes());
-    file.extend_from_slice(&(20u32 * 1024 - 1000).to_le_bytes());
-    file.extend_from_slice(&1000u32.to_le_bytes());
-    file.extend_from_slice(&plain[52..]);
-    let riff_size = (file.len() - 8) as u32;
-    file[4..8].copy_from_slice(&riff_size.to_le_bytes());
-    let report = inspect_at3(&file);
-    // Sony's files carry one and play; it fails only the strict profile.
-    assert!(report.is_playable());
-    assert!(strict_failure(&file).contains("it has a fact chunk"));
+fn a_file_without_a_loop_point_is_flagged() {
+    // Plays once on hardware, then stops.
+    let file = write_lp4(&silent_frame(3).repeat(20));
+    assert!(inspect_at3(&file).is_playable());
+    assert!(strict_failure(&file).contains("the XMB plays it once and then stops"));
+}
+
+/// Rebuild `file` with only the chunks whose names are listed.
+fn keep_chunks(file: &[u8], keep: &[&str]) -> Vec<u8> {
+    let wave = riff::parse(file).unwrap();
+    let mut out = file[..12].to_vec();
+    for c in &wave.chunks {
+        if keep.contains(&c.name().as_str()) {
+            out.extend_from_slice(&file[c.offset..c.offset + 8 + c.size as usize]);
+        }
+    }
+    let size = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&size.to_le_bytes());
+    out
+}
+
+#[test]
+fn a_loop_point_without_fact_is_rejected() {
+    // On hardware this plays nothing at all.
+    let file = keep_chunks(&silent_file(20), &["fmt", "smpl", "data"]);
+    let summary = inspect_at3(&file).failure_summary(false).unwrap();
+    assert_eq!(
+        summary,
+        "it has a loop point (smpl chunk) but no fact chunk; the XMB plays nothing at all"
+    );
+}
+
+#[test]
+fn fact_without_a_loop_point_is_flagged() {
+    let file = keep_chunks(&silent_file(20), &["fmt", "fact", "data"]);
+    assert!(inspect_at3(&file).is_playable());
+    assert!(strict_failure(&file).contains("fact chunk but no loop point"));
+}
+
+#[test]
+fn a_loop_that_disagrees_with_fact_is_flagged() {
+    let mut file = silent_file(20);
+    // The loop start is the twelfth word of smpl, 44 bytes into its body.
+    let smpl = riff::parse(&file).unwrap().chunks[2].offset + 8;
+    file[smpl + 44..smpl + 48].copy_from_slice(&0u32.to_le_bytes());
+    assert!(inspect_at3(&file).is_playable());
+    assert!(strict_failure(&file).contains("only that layout is known to loop"));
 }
 
 #[test]
@@ -530,7 +563,7 @@ fn over_500_kb_is_rejected() {
         .failure_summary(false)
         .unwrap();
     assert!(
-        summary.contains("the file is 518460 bytes; the XMB plays at most 500000 bytes (500 KB)"),
+        summary.contains("the file is 518544 bytes; the XMB plays at most 500000 bytes (500 KB)"),
         "{summary}"
     );
 }
@@ -607,7 +640,7 @@ fn quality_floors_hold_for_the_test_signals() {
         ("sine sweep", sweep(2.0), 31.0, [31.0, 31.0, 29.5]),
         ("pink noise", pink_noise(2.0), 8.5, [11.0, 1.5, -1.0]),
         ("drum loop", drum_loop(2.0), 16.5, [21.0, 6.0, 5.0]),
-        ("tonal chord", chord(2.0), 32.5, [32.5, 7.0, 4.0]),
+        ("tonal chord", chord(2.0), 32.5, [32.5, 7.0, 1.5]),
     ];
     for (name, signal, floor, band_floors) in cases {
         let (reference, decoded, file) = round_trip(signal);
@@ -640,18 +673,40 @@ fn quality_floors_hold_for_the_test_signals() {
 }
 
 #[test]
-fn output_is_aligned_with_the_input_and_the_loop_seam_is_clean() {
-    let (reference, decoded, _) = round_trip(chord(1.0));
+fn the_loop_seam_and_the_loop_start_are_clean() {
+    let (reference, decoded, file) = round_trip(drum_loop(1.0));
     let overall = snr_db(&reference[0], &decoded[0]);
-    // The first and last 2048 samples straddle the loop point.
     let n = reference[0].len();
-    let seam: Vec<f32> = [&reference[0][n - 2048..], &reference[0][..2048]].concat();
-    let seam_decoded: Vec<f32> = [&decoded[0][n - 2048..], &decoded[0][..2048]].concat();
-    let at_seam = snr_db(&seam, &seam_decoded);
+    let d = LOOP_DELAY as usize;
+    // Across the loop end the stream carries on into the start of the track,
+    // so the decoder reaches the seam with the right lookahead.
+    let stream = decode_all(data_chunk(&file), LP4).unwrap();
+    let expected: Vec<f32> = [&reference[0][n - 2048..], &reference[0][..1024]].concat();
+    let at_seam = snr_db(&expected, &stream[0][d + n - 2048..d + n + 1024]);
     assert!(
-        at_seam > overall - 6.0,
+        at_seam > overall - 3.0,
         "seam {at_seam:.1} dB vs {overall:.1} dB overall"
     );
+    // The first play starts from an empty decoder; the lead-in frame absorbs it.
+    let at_start = snr_db(&reference[0][..2048], &decoded[0][..2048]);
+    assert!(
+        at_start > overall - 3.0,
+        "start {at_start:.1} dB vs {overall:.1} dB overall"
+    );
+}
+
+#[test]
+fn the_loop_is_exactly_the_input_length() {
+    // No padding: 1.3 s is not a whole number of frames, and the loop holds
+    // exactly its samples.
+    let (file, _) = encode_snd0(chord(1.3), &Snd0Options::default()).unwrap();
+    let wave = riff::parse(&file).unwrap();
+    let fact = wave.fact.unwrap();
+    assert_eq!(fact.samples as usize, samples(1.3));
+    assert_eq!(fact.delay, 1024);
+    let looped = wave.loop_points.unwrap();
+    assert_eq!((looped.start, looped.end), (1024, 1024 + fact.samples - 1));
+    assert_eq!(inspect_at3(&file).frames, frames_for(samples(1.3)));
 }
 
 #[test]
@@ -708,7 +763,7 @@ fn tone(rate: u32, hz: f64, seconds: f64, amplitude: f64) -> Vec<f32> {
 fn check_tone(file: &[u8], hz: f64, amplitude: f64, seconds: f64) {
     let report = inspect_at3(file);
     assert!(report.is_strictly_valid(), "{:?}", report.findings);
-    let decoded = decode_looped(data_chunk(file));
+    let decoded = decode_loop(file);
     let expected = tone(44_100, hz, seconds, amplitude);
     let n = expected.len() - 4096;
     for (ch, decoded) in decoded.iter().enumerate() {
@@ -734,11 +789,7 @@ fn every_input_format_converts() {
             "{name}: {:?}",
             snd0.report.findings
         );
-        assert_eq!(
-            snd0.report.frames,
-            (1.5f64 * 44_100.0 / 1024.0).ceil() as usize,
-            "{name}"
-        );
+        assert_eq!(snd0.report.frames, frames_for(66_150), "{name}");
         // The dominant 220 Hz tone comes back at the level the input decodes
         // to (a lossy input need not hold it at exactly its nominal level).
         let level = |pcm: &[f32], rate: u32| {
@@ -752,7 +803,7 @@ fn every_input_format_converts() {
         };
         let (_, input) = pspbuild::audio::input::decode(&fixture(name)).unwrap();
         let before = level(&input.channels[0], input.sample_rate);
-        let decoded = decode_looped(data_chunk(&snd0.data));
+        let decoded = decode_loop(&snd0.data);
         for (ch, decoded) in decoded.iter().enumerate() {
             let after = level(decoded, 44_100);
             assert!(
@@ -811,7 +862,7 @@ fn long_input_is_cut_to_fit_and_says_so() {
     assert!(snd0.data.len() <= 500_000);
     assert_eq!(snd0.notices.len(), 1);
     assert!(
-        snd0.notices[0].contains("cut to the first 54.98 s"),
+        snd0.notices[0].contains("cut to the first 54.94 s"),
         "{}",
         snd0.notices[0]
     );
@@ -827,7 +878,7 @@ fn start_and_duration_select_a_section() {
         duration: Some(1.0),
     };
     let snd0 = make_snd0(&wav(44_100, &[t]), &options).unwrap();
-    assert_eq!(snd0.report.frames, 44_100usize.div_ceil(1024));
+    assert_eq!(snd0.report.frames, frames_for(44_100));
     check_tone(&snd0.data, 1500.0, 8000.0, 1.0);
 
     let past = Snd0Options {
@@ -843,7 +894,13 @@ fn a_playable_snd0_passes_through_untouched() {
     let snd0 = make_snd0(&file, &Snd0Options::default()).unwrap();
     assert_eq!(snd0.source, Snd0Source::PassedThrough);
     assert_eq!(snd0.data, file);
-    assert!(snd0.notices.is_empty());
+    // It is passed through, but the caller hears that it will not loop.
+    assert_eq!(snd0.notices.len(), 1);
+    assert!(
+        snd0.notices[0].contains("plays it once"),
+        "{}",
+        snd0.notices[0]
+    );
 }
 
 #[test]
@@ -909,4 +966,13 @@ fn damaged_inputs_fail_cleanly() {
     let mut zero_bits = wav(44_100, &[vec![0.0; 16]]);
     zero_bits[34] = 0;
     assert!(make_snd0(&zero_bits, &Snd0Options::default()).is_err());
+}
+
+#[test]
+fn reencoding_our_own_output_keeps_just_the_loop() {
+    // The lead-in and the spare frame are not part of the track, so decoding
+    // a looped SND0 to re-encode it must drop them.
+    let (file, _) = encode_snd0(chord(1.0), &Snd0Options::default()).unwrap();
+    let (_, pcm) = pspbuild::audio::input::decode(&file).unwrap();
+    assert_eq!(pcm.len(), samples(1.0));
 }

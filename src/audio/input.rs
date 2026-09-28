@@ -321,8 +321,20 @@ fn decode_atrac3(data: &[u8]) -> Result<Pcm> {
         block_align,
         joint_stereo: fmt.joint_stereo().unwrap_or(block_align == 192),
     };
-    let [left, right] =
+    let [mut left, mut right] =
         decode_all(frames, layout).map_err(|(i, e)| bad("ATRAC3", format!("frame {i}: {e}")))?;
+    // With a fact chunk, only the samples it names are the track: the lead-in
+    // before them and any spare frame after are not part of the loop.
+    if let Some(fact) = wave.fact {
+        let start = (fact.delay as usize).min(left.len());
+        let end = start.saturating_add(fact.samples as usize).min(left.len());
+        if end > start {
+            for channel in [&mut left, &mut right] {
+                channel.truncate(end);
+                channel.drain(..start);
+            }
+        }
+    }
     Ok(Pcm {
         sample_rate: fmt.sample_rate,
         channels: vec![left, right],

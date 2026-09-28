@@ -27,20 +27,82 @@ pub const LP4_FMT: [u8; 32] = [
     0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
 ];
 
+/// Samples of the stream before the loop starts.
+///
+/// The XMB loops an SND0 only when it carries a loop point, and it honours
+/// one only alongside a `fact` chunk whose delay is where the loop starts;
+/// a loop without `fact` makes it play nothing. On hardware, a delay of one
+/// frame loops cleanly. The first frame decodes from an empty decoder, so it
+/// is exactly the part skipped.
+pub const LOOP_DELAY: u32 = 1024;
+
 /// Wrap LP4 frames in the container: `fmt ` then `data`, nothing else.
+///
+/// The XMB plays such a file once and stops. [`write_lp4_looped`] is what
+/// pspbuild writes.
 pub fn write_lp4(frames: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(60 + frames.len());
+    write_chunks(&[(b"fmt ", &LP4_FMT), (b"data", frames)])
+}
+
+/// Wrap LP4 frames that loop: `fmt `, `fact`, `smpl`, then `data`.
+///
+/// `samples` is the length of the loop. The stream holds [`LOOP_DELAY`]
+/// samples before it; the loop is samples `LOOP_DELAY` to
+/// `LOOP_DELAY + samples - 1`, repeated forever.
+pub fn write_lp4_looped(frames: &[u8], samples: u32) -> Vec<u8> {
+    let fact = words(&[samples, LOOP_DELAY]);
+    let smpl = smpl_chunk(LOOP_DELAY, LOOP_DELAY + samples - 1);
+    write_chunks(&[
+        (b"fmt ", &LP4_FMT),
+        (b"fact", &fact),
+        (b"smpl", &smpl),
+        (b"data", frames),
+    ])
+}
+
+fn words(values: &[u32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// A `smpl` chunk with one forward loop, laid out as Sony's own SND0s have it:
+/// the sample period in nanoseconds, MIDI note 60, one loop, and 24 in the
+/// sampler-data field where the standard would have 0.
+fn smpl_chunk(start: u32, end: u32) -> Vec<u8> {
+    words(&[0, 0, 22_676, 60, 0, 0, 0, 1, 24, 0, 0, start, end, 0, 0])
+}
+
+fn write_chunks(chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+    let body: usize = chunks.iter().map(|(_, d)| 8 + d.len() + d.len() % 2).sum();
+    let mut out = Vec::with_capacity(12 + body);
     out.extend_from_slice(b"RIFF");
-    let riff_size = 4 + (8 + LP4_FMT.len()) + (8 + frames.len());
-    out.extend_from_slice(&(riff_size as u32).to_le_bytes());
+    out.extend_from_slice(&((4 + body) as u32).to_le_bytes());
     out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&(LP4_FMT.len() as u32).to_le_bytes());
-    out.extend_from_slice(&LP4_FMT);
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
-    out.extend_from_slice(frames);
+    for (id, data) in chunks {
+        out.extend_from_slice(*id);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+    }
     out
+}
+
+/// The `fact` chunk of an ATRAC3 file: how many samples it holds, and how
+/// many decoded samples come before the first of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fact {
+    pub samples: u32,
+    pub delay: u32,
+}
+
+/// The first loop of a `smpl` chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loop {
+    pub start: u32,
+    pub end: u32,
+    /// 0 means forever.
+    pub play_count: u32,
 }
 
 /// One chunk of a RIFF file.
@@ -120,6 +182,10 @@ impl Fmt {
 pub struct Wave<'a> {
     pub chunks: Vec<Chunk>,
     pub fmt: Option<Fmt>,
+    /// `fact`, when present and at least eight bytes.
+    pub fact: Option<Fact>,
+    /// The first loop of `smpl`, when there is one.
+    pub loop_points: Option<Loop>,
     pub data: Option<&'a [u8]>,
     /// Declared size in the RIFF header.
     pub riff_size: u32,
@@ -139,6 +205,8 @@ pub fn parse(file: &[u8]) -> Result<Wave<'_>, String> {
     let mut chunks = Vec::new();
     let mut fmt = None;
     let mut data = None;
+    let mut fact = None;
+    let mut loop_points = None;
     let mut offset = 12;
     while offset < file.len() {
         if offset + 8 > file.len() {
@@ -160,6 +228,31 @@ pub fn parse(file: &[u8]) -> Result<Wave<'_>, String> {
         match &id {
             b"fmt " if fmt.is_none() => fmt = Some(Fmt::parse(chunk.body(file))?),
             b"data" if data.is_none() => data = Some(chunk.body(file)),
+            b"fact" if fact.is_none() => {
+                let body = chunk.body(file);
+                let word = |i: usize| {
+                    u32::from_le_bytes(body[i * 4..i * 4 + 4].try_into().expect("4 bytes"))
+                };
+                if body.len() >= 8 {
+                    fact = Some(Fact {
+                        samples: word(0),
+                        delay: word(1),
+                    });
+                }
+            }
+            b"smpl" if loop_points.is_none() => {
+                let body = chunk.body(file);
+                let word = |i: usize| {
+                    u32::from_le_bytes(body[i * 4..i * 4 + 4].try_into().expect("4 bytes"))
+                };
+                if body.len() >= 60 && word(7) >= 1 {
+                    loop_points = Some(Loop {
+                        start: word(11),
+                        end: word(12),
+                        play_count: word(14),
+                    });
+                }
+            }
             _ => {}
         }
         // Chunks are padded to an even length.
@@ -169,6 +262,8 @@ pub fn parse(file: &[u8]) -> Result<Wave<'_>, String> {
     Ok(Wave {
         chunks,
         fmt,
+        fact,
+        loop_points,
         data,
         riff_size,
     })
@@ -193,6 +288,31 @@ mod tests {
         assert_eq!(fmt.joint_stereo(), Some(true));
         assert_eq!(wave.data.unwrap(), &frames[..]);
         assert_eq!(wave.riff_size as usize, file.len() - 8);
+    }
+
+    #[test]
+    fn looped_files_parse_back() {
+        let file = write_lp4_looped(&[0xA2u8; 192 * 5], 3000);
+        let wave = parse(&file).unwrap();
+        let names: Vec<_> = wave.chunks.iter().map(Chunk::name).collect();
+        assert_eq!(names, ["fmt", "fact", "smpl", "data"]);
+        assert_eq!(
+            wave.fact,
+            Some(Fact {
+                samples: 3000,
+                delay: 1024
+            })
+        );
+        assert_eq!(
+            wave.loop_points,
+            Some(Loop {
+                start: 1024,
+                end: 4023,
+                play_count: 0
+            })
+        );
+        assert_eq!(wave.riff_size as usize, file.len() - 8);
+        assert_eq!(wave.data.unwrap().len(), 192 * 5);
     }
 
     #[test]

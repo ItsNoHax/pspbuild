@@ -571,6 +571,24 @@ fn print_at3(out: &mut impl Write, report: &At3Report, indent: &str) {
             );
         }
     }
+    if let (Some(fact), Some(looped)) = (report.fact, report.loop_points) {
+        let seconds = f64::from(fact.samples) / 44_100.0;
+        let times = if looped.play_count == 0 {
+            "forever".to_string()
+        } else {
+            format!("{} times", looped.play_count)
+        };
+        line(
+            out,
+            "Loop",
+            format!(
+                "samples {} to {} ({seconds:.2} s), {times}",
+                looped.start, looped.end
+            ),
+        );
+    } else if report.format_tag.is_some() {
+        line(out, "Loop", "none".into());
+    }
     let verdict = if !report.is_playable() {
         "NOT PLAYABLE"
     } else if report.is_strictly_valid() {

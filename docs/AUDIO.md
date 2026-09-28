@@ -1,7 +1,7 @@
 # SND0.AT3: XMB background music
 
-`SND0.AT3` is the music the XMB plays, on a loop, while a game's icon is
-selected. This document describes what the XMB accepts, why each rule exists,
+`SND0.AT3` is the music the XMB plays while a game's icon is selected. It
+loops only if the file carries a loop point in the form §2.1 describes. This document describes what the XMB accepts, why each rule exists,
 and how pspbuild meets them. Where a claim rests on a real file or on
 hardware, that is stated.
 
@@ -16,7 +16,8 @@ hardware, that is stated.
 WAV / FLAC / Ogg Vorbis / MP3 / ATRAC3
   -> PCM -> stereo -> trim -> 44.1 kHz -> low-pass 15.5 kHz
   -> ATRAC3 LP4, joint stereo, three QMF bands
-  -> RIFF/WAVE (fmt, data) -> strict validation -> SND0.AT3
+  -> RIFF/WAVE (fmt, fact, smpl, data) with a loop point -> strict validation
+  -> SND0.AT3
 ```
 
 ```sh
@@ -36,7 +37,8 @@ validation.
 
 ## 2. The container
 
-An SND0 is a RIFF/WAVE file with two chunks, `fmt ` then `data`.
+An SND0 is a RIFF/WAVE file. pspbuild writes four chunks: `fmt `, `fact`,
+`smpl`, then `data`.
 
 | offset | bytes | field | value |
 | --- | --- | --- | --- |
@@ -52,24 +54,57 @@ An SND0 is a RIFF/WAVE file with two chunks, `fmt ` then `data`.
 | 0x22 | 2 | bits per sample | 0 |
 | 0x24 | 2 | extension size | 14 |
 | 0x26 | 14 | ATRAC3 extension | `01 00 00 10 00 00 01 00 01 00 01 00 00 00` |
-| 0x34 | 8 | `data` chunk header | size = frames x 192 |
-| 0x3C | | frames | |
+| 0x34 | 8 | `fact` chunk header | size 8 |
+| 0x3C | 4 | samples | length of the loop, *L* |
+| 0x40 | 4 | delay | 1024 |
+| 0x44 | 8 | `smpl` chunk header | size 60 |
+| 0x4C | 60 | `smpl` body | one forward loop, samples 1024 to 1024 + *L* - 1, forever |
+| 0x88 | 8 | `data` chunk header | size = frames x 192 |
+| 0x90 | | frames | |
 
-pspbuild writes these 60 header bytes exactly as a known-good file has them.
-That file plays in the XMB of a PSP Slim on 6.61 with ARK. The extension reads
-as seven little-endian words: 1, a 32-bit 0x1000, joint stereo (1), joint
-stereo again (1), 1 and 0. Sony's own LP2 file has the same words, except that
-both joint-stereo words are 0.
+The `fmt ` chunk is byte for byte that of a known-good file, which plays in
+the XMB of a PSP Slim on 6.61 with ARK. Its extension reads as seven
+little-endian words: 1, a 32-bit 0x1000, joint stereo (1), joint stereo
+again (1), 1 and 0. Sony's own LP2 file has the same words, except that both
+joint-stereo words are 0.
 
-**Rules, and why:**
+The `smpl` body is laid out as in Sony's own SND0: manufacturer and product
+0, sample period 22676 ns, MIDI unity note 60, no pitch fraction or SMPTE
+offset, one loop, and 24 in the sampler-data field. The loop record is cue
+point 0, type 0 (forward), start, end, fraction 0, play count 0 (forever).
+
+### 2.1 Looping needs `fact` and `smpl` together
+
+These three layouts were played in the XMB of a PSP Slim (6.61, ARK), each
+with the same 55 s of music:
+
+| layout | result |
+| --- | --- |
+| `fmt `, `data` only | plays once, then stops |
+| `smpl` loop over samples 0 to *N* - 1, no `fact` | **plays nothing** |
+| `fact` = (*L*, 1024), `smpl` loop 1024 to 1024 + *L* - 1 | **loops cleanly** |
+
+Sony's retail SND0 has the third form, with a delay of 1143: `fact` =
+(1075012, 1143) and a loop from 1143 to 1076154. The delay counts decoded
+samples before the first sample of the track; the loop starts there and ends
+on the last one. A `fact` count of exactly frames x 1024 is wrong: it leaves no
+room for the delay.
+
+pspbuild writes the third form with a delay of one frame (1024 samples):
+
+- The first frame is the lead-in. It is decoded from an empty decoder, and
+  it is exactly the part the loop never returns to.
+- The stream holds the track as a cycle: stream sample *n* is track sample
+  *n* - 1024, wrapped around. So the lead-in is the end of the track, and the
+  audio after the loop end is its start. Wherever the decoder crosses the
+  seam, the samples around it are the ones that belong there.
+- One spare frame follows the frame holding the loop end, so the decoder has
+  what comes after it.
+
+**Other rules, and why:**
 
 - **RIFF/WAVE only.** OMA and RealMedia containers hold the same codec, but
   they do not play as SND0.
-- **Nothing but `fmt ` and `data`.** In particular there is no `fact` chunk.
-  Where a Sony file has one, it claims *fewer* samples than the frames hold.
-  The difference is room for the decoder's delay. A count of exactly
-  frames x 1024 is wrong. Omitting the chunk is known to play, so pspbuild
-  omits it.
 - **44.1 kHz stereo.** The XMB has no resampler for SND0, and SND0 is never
   mono.
 
@@ -127,34 +162,30 @@ fourth. The validator checks every frame anyway.
 ### 3.3 Length and size
 
 At most **55 s** and **500 KB** (500000 bytes). At LP4 the time limit binds
-first: 2368 frames is 54.98 s and 454,716 bytes, and one more frame is over
-55 s. A longer input is cut to its first 54.98 s, with a warning. Use
-`--start`/`--duration` to choose a different section.
+first: 2368 frames is 54.98 s and 454,800 bytes, and one more frame is over
+55 s. Two of those frames are the lead-in and the spare, so the longest loop
+is 2366 frames, 54.94 s. A longer input is cut to its first 54.94 s, with a
+warning. Use `--start`/`--duration` to choose a different section.
 
 ### 3.4 Looping
 
-The XMB loops SND0, so:
+With the loop point of §2.1 in place:
 
 - **pspbuild never fades either end.** A fade would put a dip at the loop
   point.
-- **The encoder treats the track as periodic.** The analysis runs as if the
-  last frame came before the first. When the XMB wraps around, the decoder's
-  history is exactly what the encoder assumed, so the seam is coded like any
-  other point.
-- **There is no delay.** The analysis is the exact transpose of the decoder's
-  synthesis, so decoded sample *n* lines up with input sample *n*. No `fact`
-  chunk or padding is needed to compensate.
+- **The loop is exactly the input.** It runs for the input's own length, not
+  a whole number of frames, so there is no padding and no gap at the seam.
+- **The encoder treats the stream as periodic**, and the stream holds the
+  track as a cycle (§2.1). The seam is coded like any other point.
+- **The encoder adds no delay of its own.** Its analysis is the exact
+  transpose of the decoder's synthesis, so decoded stream sample *n* is exactly
+  the encoder's input sample *n*. The only delay is the deliberate
+  one-frame lead-in.
 - The resampler and low-pass are also periodic.
-- The last frame is padded with silence to a whole frame, up to 23 ms. For a
-  seamless loop, make the input a whole number of frames long (a multiple of
-  1024 samples at 44.1 kHz).
 - An MP3 input's encoder delay and padding are trimmed using the LAME/Lavc
   header. Otherwise a looped MP3 would gain a gap of silence at the seam.
-
-The first pass starts with an empty decoder, so its first frame (23 ms) is
-slightly off. If the XMB keeps its decoder running across the loop, every
-later pass is exact. If it restarts the decoder each time, each pass starts
-the same slightly-off way. Which one it does is not known.
+- Decoding an ATRAC3 input keeps only the samples its `fact` chunk names, so
+  re-encoding a looped SND0 does not fold its lead-in into the loop.
 
 ## 4. Encoder and decoder
 
@@ -205,21 +236,27 @@ non-zero.
 - any sound unit coding four bands, named by frame: *"frame 17 codes four QMF
   bands; the XMB will not play this"*
 - any frame that does not decode
+- a loop point (`smpl`) without a `fact` chunk: the XMB plays nothing
 - longer than 55 s, or larger than 500 KB
 
 **Warnings: differs from the hardware-proven profile.** These fail only with
 `--strict`, which is what pspbuild applies to its own output.
 
 - LP2
-- a `fact` chunk, or any chunk besides `fmt ` and `data`
+- no loop point: the XMB plays the file once and stops
+- a `fact` chunk without a loop point
+- a loop that is not `fact` delay to delay + samples - 1, or that does not
+  repeat forever, or a `fact` that claims more samples than the frames hold
+- any chunk besides `fmt `, `fact`, `smpl` and `data`
 - LP4 without the joint-stereo flag
 - a byte rate that does not match the block align
 - an fmt chunk that differs from the known-good one
 
 The plan behind this work called for "first byte of every frame is `0xA2`" and
 "no `fact` chunk" as hard rules. The retail file breaks both and was shipped
-by Sony, so both rules were weakened. The hard rule is *never four bands*. The
-exact `0xA2` profile is what pspbuild writes.
+by Sony. The hard rules are *never four bands* and *no loop without `fact`*.
+The `fact` chunk turned out to be required for looping (§2.1). The exact `0xA2`
+profile is what pspbuild writes.
 
 ## 6. Inputs
 
@@ -251,17 +288,17 @@ Nyquist rate.
 ## 7. Quality, as measured
 
 Frame validity is necessary but not sufficient, so the tests measure quality.
-Each test signal goes through the whole pipeline and is decoded in steady
-state. It is then compared with the low-passed input. Per-band figures split
+Each test signal goes through the whole pipeline, and the loop the `fact`
+chunk names is decoded. It is then compared with the low-passed input. Per-band figures split
 reference and error with the codec's own QMF bank. The floors in
 `tests/audio.rs` sit about 1 to 2 dB below these values.
 
 | signal (2 s) | SNR | band 0 (0 to 5.5 kHz) | band 1 (5.5 to 11 kHz) | band 2 (11 to 16.5 kHz) |
 | --- | --- | --- | --- | --- |
-| log sine sweep 50 Hz to 15 kHz | 33.2 dB | 33.3 | 33.3 | 31.7 |
-| pink noise, independent channels | 9.8 dB | 12.6 | 2.4 | 0.0 |
+| log sine sweep 50 Hz to 15 kHz | 32.9 dB | 33.1 | 33.2 | 30.1 |
+| pink noise, independent channels | 9.8 dB | 12.5 | 2.4 | 0.0 |
 | synthetic drum loop | 18.2 dB | 22.8 | 7.7 | 6.4 |
-| A-major chord | 34.5 dB | 34.5 | 8.6 | 5.7 |
+| A-major chord | 34.5 dB | 34.5 | 7.1 | 2.2 |
 
 The chord has almost no energy above band 0, so its upper-band figures mean
 little. Pink noise is the worst case: at 66 kbps no bits are left for its
@@ -273,7 +310,7 @@ the decoded original:
 | source | SNR |
 | --- | --- |
 | the known-good SND0 (orchestral) | 23.0 dB |
-| the retail LP2 SND0 (dense pop, 132 kbps source) | 13.4 dB |
+| the retail LP2 SND0 (dense pop, 132 kbps source) | 13.2 dB |
 
 When ffmpeg is installed, the tests also decode pspbuild's output with it. It
 must agree with pspbuild's decoder to better than 100 dB. It agrees to about
@@ -325,7 +362,8 @@ Hardware is the only real proof. To check a build:
 
 1. Convert and inspect:
    `pspbuild audio snd0 theme.flac -o SND0.AT3 && pspbuild audio inspect SND0.AT3`.
-   The verdict should be *playable; matches the profile pspbuild writes*.
+   The verdict should be *playable; matches the profile pspbuild writes*, and
+   the loop should read *samples 1024 to …, forever*.
 2. Build with it: `pspbuild build-mg game.prx --snd0 SND0.AT3 -o EBOOT.PBP`,
    then `pspbuild verify EBOOT.PBP`. Expect `VALID: SND0.AT3 ...`.
 3. Copy to `ms0:/PSP/GAME/<folder>/EBOOT.PBP`. Remove any stale copy, since the
@@ -333,6 +371,7 @@ Hardware is the only real proof. To check a build:
 4. Highlight the game in the XMB and wait a second or two. Music should start.
    Silence with no error is the four-band failure, or some new one.
 5. Leave it past the end of the track. It should loop without a gap or click.
+   Stopping instead means the loop point is missing (§2.1).
 6. Check the volume and stereo image against the source. Listen for pre-echo
    on sharp transients, the known weakness (§4).
 7. Negative control: `pspbuild audio inspect` an SND0 known to be silent. It

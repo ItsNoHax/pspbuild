@@ -77,8 +77,17 @@ pub struct Snd0 {
 }
 
 /// The most samples an SND0 may hold: whole frames within [`MAX_SECONDS`].
-pub const MAX_SAMPLES: usize =
-    (MAX_SECONDS as usize * SAMPLE_RATE as usize) / FRAME_SAMPLES * FRAME_SAMPLES;
+pub const MAX_SAMPLES: usize = (MAX_FRAMES - 2) * FRAME_SAMPLES;
+
+/// Whole frames within [`MAX_SECONDS`].
+const MAX_FRAMES: usize = MAX_SECONDS as usize * SAMPLE_RATE as usize / FRAME_SAMPLES;
+
+/// Frames pspbuild writes for a loop of `samples`: the one-frame lead-in
+/// before the loop, the loop itself, and one frame after it so the decoder
+/// has what follows the loop end to hand.
+pub fn frames_for(samples: usize) -> usize {
+    (samples + riff::LOOP_DELAY as usize).div_ceil(FRAME_SAMPLES) + 1
+}
 
 /// Turn any supported audio file into an `SND0.AT3`.
 ///
@@ -192,6 +201,20 @@ pub fn encode_snd0(mut pcm: Pcm, options: &Snd0Options) -> Result<(Vec<u8>, Opti
     // at the loop point.
     pcm::lowpass(&mut pcm);
 
-    let frames = atrac3::encoder::encode(&pcm.channels[0], &pcm.channels[1]);
-    Ok((riff::write_lp4(&frames), cut))
+    // The stream starts LOOP_DELAY samples before the loop and runs on past
+    // its end. Filling it with the track as a cycle — stream sample n is track
+    // sample n - LOOP_DELAY, wrapped — means the audio on both sides of the
+    // loop points is what comes before and after them in the loop, so the
+    // decoder crosses the seam with the right history either way.
+    let length = pcm.len();
+    let total = frames_for(length) * FRAME_SAMPLES;
+    let delay = riff::LOOP_DELAY as usize;
+    let cycle = |channel: &[f32]| -> Vec<f32> {
+        (0..total)
+            .map(|n| channel[(n + length * (delay / length + 1) - delay) % length])
+            .collect()
+    };
+    let (left, right) = (cycle(&pcm.channels[0]), cycle(&pcm.channels[1]));
+    let frames = atrac3::encoder::encode(&left, &right);
+    Ok((riff::write_lp4_looped(&frames, length as u32), cut))
 }

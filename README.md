@@ -72,7 +72,7 @@ Run `pspbuild <command> --help` for all options.
 | `build-eg` | `--opnssmp <FILE>` | `OPNSSMP.BIN` module |
 | `extract` | `--decrypt` | Also write `DATA.PSP.dec` (MG only) |
 | `audio snd0` | `-o`, `--start`, `--duration` | Output (default `SND0.AT3` beside the input) and section |
-| `audio inspect` | `--strict` | Also fail on anything `pspbuild` would not write, e.g. LP2 or a `fact` chunk |
+| `audio inspect` | `--strict` | Also fail on anything `pspbuild` would not write, e.g. LP2 or a missing loop point |
 
 ### Example output
 
@@ -119,19 +119,22 @@ A PBP with an `SND0.AT3` also gets an `SND0.AT3:` block, the same report as `aud
 
 ```console
 $ pspbuild audio inspect SND0.AT3
-File size:           211836 bytes
+File size:           13008 bytes
 Chunks:
   fmt   offset 0x0000000C          32 bytes
-  data  offset 0x00000034      211776 bytes
+  fact  offset 0x00000034           8 bytes
+  smpl  offset 0x00000044          60 bytes
+  data  offset 0x00000088       12864 bytes
 Codec:               ATRAC3 (0x0270)
 Sample rate:         44100 Hz
 Channels:            2
 Bitrate:             66144 bps (LP4), 192-byte frames
 Stereo:              joint
 fmt chunk:           identical to a known-good LP4 SND0
-Frames:              1103 (25.61 s)
-Coded QMF bands:     3 bands in 1103
-  side channel:      3 bands in 1103
+Frames:              67 (1.56 s)
+Coded QMF bands:     3 bands in 67
+  side channel:      3 bands in 67
+Loop:                samples 1024 to 67173 (1.50 s), forever
 Verdict:             playable; matches the profile pspbuild writes
 ```
 
@@ -193,8 +196,8 @@ std::fs::write("SND0.AT3", &snd0.data)?;
 - EG supports fixed-key content IDs only; supplied version keys (`KEYS.BIN`) are not supported.
 - `inspect`, `verify`, `decrypt` and `extract --decrypt` do not open NPDRM (EG) executables.
 - Hardware-tested on one PSP Slim on official firmware.
-- SND0 encoder output is validated offline only; its header matches a hardware-proven SND0 byte for byte, but its frames are not yet played on a PSP ([AUDIO.md §9](docs/AUDIO.md) has a checklist).
-- SND0 input: WAV, FLAC, Ogg Vorbis, MP3, ATRAC3. No AAC/M4A or Opus: no permissively licensed pure-Rust decoder. At most 55 s kept.
+- SND0 output plays and loops cleanly on one PSP Slim (6.61, ARK); other models are untested ([AUDIO.md §9](docs/AUDIO.md) has a checklist).
+- SND0 input: WAV, FLAC, Ogg Vorbis, MP3, ATRAC3. No AAC/M4A or Opus: no permissively licensed pure-Rust decoder. Longer input is cut to its first 54.94 s.
 - SND0 encoder has no gain control; sharp transients may pre-echo.
 
 See [COMPATIBILITY.md](docs/COMPATIBILITY.md).

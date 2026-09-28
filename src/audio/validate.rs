@@ -76,6 +76,10 @@ pub struct At3Report {
     pub bands_second_unit: [usize; 4],
     /// Frames that decoded without error.
     pub frames_decoded: usize,
+    /// The `fact` chunk: samples and decoder delay.
+    pub fact: Option<riff::Fact>,
+    /// The loop point from `smpl`.
+    pub loop_points: Option<riff::Loop>,
     pub findings: Vec<Finding>,
 }
 
@@ -245,16 +249,14 @@ pub fn inspect_at3(file: &[u8]) -> At3Report {
 
     for chunk in &report.chunks.clone() {
         match chunk.id.as_str() {
-            "fmt" | "data" => {}
-            "fact" => report.warning(
-                "it has a fact chunk; pspbuild writes none. A sample count of exactly \
-                 frames x 1024 is wrong, since it leaves no room for the decoder delay",
-            ),
+            "fmt" | "data" | "fact" | "smpl" => {}
             other => report.warning(format!(
-                "it has a '{other}' chunk; pspbuild writes only fmt and data"
+                "it has a '{other}' chunk; pspbuild writes only fmt, fact, smpl and data"
             )),
         }
     }
+    report.fact = wave.fact;
+    report.loop_points = wave.loop_points;
 
     let Some(data) = wave.data else {
         report.error("there is no data chunk");
@@ -275,6 +277,7 @@ pub fn inspect_at3(file: &[u8]) -> At3Report {
         report.error("there are no frames");
         return report;
     }
+    check_loop(&mut report);
     if report.duration_seconds() > MAX_SECONDS {
         report.error(format!(
             "it lasts {:.2} s; the XMB plays at most {MAX_SECONDS:.0} s",
@@ -292,6 +295,52 @@ pub fn inspect_at3(file: &[u8]) -> At3Report {
         );
     }
     report
+}
+
+/// Whether the XMB will loop the file, from its `fact` and `smpl` chunks.
+///
+/// All three layouts below were tried on a PSP Slim: without a loop point
+/// the XMB plays the file once and stops; with one but no `fact` it plays
+/// nothing; with `fact` = (length, delay) and a loop from `delay` to
+/// `delay + length - 1` it loops cleanly. Sony's own SND0 uses the last form.
+fn check_loop(report: &mut At3Report) {
+    let stream_samples = (report.frames * FRAME_SAMPLES) as u64;
+    match (report.fact, report.loop_points) {
+        (None, None) => report
+            .warning("it has no loop point (smpl chunk), so the XMB plays it once and then stops"),
+        (None, Some(_)) => report.error(
+            "it has a loop point (smpl chunk) but no fact chunk; the XMB plays nothing at all",
+        ),
+        (Some(_), None) => report.warning(
+            "it has a fact chunk but no loop point (smpl chunk), so the XMB will not loop it",
+        ),
+        (Some(fact), Some(looped)) => {
+            let end = u64::from(fact.delay) + u64::from(fact.samples);
+            if fact.samples == 0 || end > stream_samples {
+                report.warning(format!(
+                    "the fact chunk claims {} samples after a delay of {}, but the frames hold {stream_samples}",
+                    fact.samples, fact.delay
+                ));
+            }
+            if u64::from(looped.start) != u64::from(fact.delay) || u64::from(looped.end) + 1 != end
+            {
+                report.warning(format!(
+                    "the loop runs from sample {} to {}, not from the fact delay {} to {}; \
+                     only that layout is known to loop",
+                    looped.start,
+                    looped.end,
+                    fact.delay,
+                    end.saturating_sub(1)
+                ));
+            }
+            if looped.play_count != 0 {
+                report.warning(format!(
+                    "the loop plays {} times rather than forever",
+                    looped.play_count
+                ));
+            }
+        }
+    }
 }
 
 /// The report for an SND0 too large to be worth reading in full.

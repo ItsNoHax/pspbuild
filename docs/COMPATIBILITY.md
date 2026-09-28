@@ -13,7 +13,8 @@ SND0 audio ([AUDIO.md](AUDIO.md)):
 | Target | Result |
 | --- | --- |
 | PSP Slim, 6.61 + ARK | an LP4 SND0 from an external encoder plays; `pspbuild`'s header is byte-identical to it |
-| any | SND0 encoded by `pspbuild audio snd0`: **untested** |
+| PSP Slim, 6.61 + ARK | SND0 from pspbuild's encoder plays; with `fact` + `smpl` it **loops cleanly** |
+| PSP Slim, 6.61 + ARK | `smpl` without `fact`: silent. Neither chunk: plays once, then stops ([AUDIO.md §2.1](AUDIO.md)) |
 
 ### 1.1 MG boot tests
 
@@ -79,7 +80,7 @@ Changing the key domain changes every ciphertext byte without changing structure
 - EG: fixed-key content IDs only; supplied version keys are not supported.
 - EG: `STARTDAT` and `OPNSSMP` are not boot-tested.
 - PSPemu / `PBOOT.PBP` is out of scope.
-- SND0: encoder output not yet played on hardware; no gain control (transients may pre-echo); no AAC/M4A or Opus input.
+- SND0: no gain control (transients may pre-echo); no AAC/M4A or Opus input. Tested on one PSP Slim.
 
 ## 6. Tests
 
