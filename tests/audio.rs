@@ -99,8 +99,10 @@ fn ffmpeg_decode(file: &[u8]) -> Option<[Vec<f32>; 2]> {
     }
     let samples: Vec<f32> = output
         .stdout
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()) * 32768.0)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b) * 32768.0)
         .collect();
     let left = samples.iter().step_by(2).copied().collect();
     let right = samples.iter().skip(1).step_by(2).copied().collect();
@@ -296,7 +298,13 @@ fn known_good_fixture_is_what_the_plan_says() {
     // Three coded bands in every frame, in both units.
     assert_eq!(report.bands_first_unit, [0, 0, 1103, 0]);
     assert_eq!(report.bands_second_unit, [0, 0, 1103, 0]);
-    assert!(data_chunk(&file).chunks_exact(192).all(|f| f[0] == 0xA2));
+    assert!(
+        data_chunk(&file)
+            .as_chunks::<192>()
+            .0
+            .iter()
+            .all(|f| f[0] == 0xA2)
+    );
 }
 
 #[test]
@@ -623,7 +631,7 @@ fn other_formats_and_garbage_are_rejected_not_panicked_on() {
 fn every_frame_codes_three_bands_and_carries_unity_joint_stereo() {
     let signal = drum_loop(1.0);
     let frames = encoder::encode(&signal.channels[0], &signal.channels[1]);
-    for frame in frames.chunks_exact(FRAME_BYTES) {
+    for frame in frames.as_chunks::<FRAME_BYTES>().0 {
         assert_eq!(frame[0], 0xA2);
         // Reversed: no weighting (0, 7), then matrix selector 3 in all bands.
         assert_eq!(frame[FRAME_BYTES - 1], 0x7F);
