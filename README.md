@@ -25,7 +25,7 @@ PSP EBOOT toolkit in Rust: encrypt PRX modules, build `EBOOT.PBP` containers, in
 ## Installation
 
 ```sh
-cargo install --path .
+cargo install pspbuild
 ```
 
 ## Usage
@@ -159,6 +159,10 @@ add_custom_command(
 ## Library
 
 The CLI is a thin wrapper over the library.
+
+```sh
+cargo add pspbuild
+```
 
 ```rust
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
