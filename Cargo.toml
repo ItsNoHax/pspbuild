@@ -2,12 +2,14 @@
 name = "pspbuild"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "PSP EBOOT toolkit: PRX encryption, MG and EG (NPDRM) EBOOT.PBP construction, inspection and verification"
 license = "MIT"
 repository = "https://github.com/ItsNoHax/pspbuild"
 readme = "README.md"
 keywords = ["psp", "prx", "kirk", "homebrew", "eboot"]
 categories = ["command-line-utilities", "encoding"]
+exclude = ["docs", "scripts", ".github", "deny.toml"]
 
 [dependencies]
 aes = "0.9.3"
