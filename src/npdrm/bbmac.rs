@@ -21,7 +21,7 @@
 //!
 //! so the whole primitive collapses to a CMAC and at most two block
 //! encryptions. This was verified against the reference implementation for
-//! every message length in [`tests`], not inferred from reading it.
+//! every message length in the `tests` module, not inferred from reading it.
 //!
 //! # Types
 //!

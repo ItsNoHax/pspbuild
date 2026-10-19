@@ -42,7 +42,7 @@
 //! This crate's normal encryption path generates its own header, so it can
 //! simply compute the correct tag. Forging is only required when a pre-existing
 //! tag must be preserved. It is kept here because it is the operation that
-//! makes template-based output work, and because [`crate::verify`] needs to
+//! makes template-based output work, and because [`crate::verify_prx`] needs to
 //! understand files produced that way.
 
 use crate::crypto::cmac::{aes_cmac, aes_cmac_forge};

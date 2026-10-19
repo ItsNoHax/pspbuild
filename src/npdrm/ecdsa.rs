@@ -16,7 +16,7 @@
 //!
 //! Each parameter was checked rather than trusted: `a` really is `p - 3`, `G`
 //! satisfies the curve equation, and `n * G` really is the point at infinity —
-//! see [`tests`].
+//! see the `tests` module.
 //!
 //! # The signature is standard ECDSA
 //!
