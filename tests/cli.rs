@@ -469,3 +469,67 @@ fn build_mg_refuses_an_eboot_where_a_module_belongs() {
         .failure()
         .stderr(contains("encrypt"));
 }
+
+/// A tiny H.264 Annex B stream: delimiter-led pictures, an IDR every 59.
+fn annex_b_stream(frames: usize) -> Vec<u8> {
+    let mut s = Vec::new();
+    for i in 0..frames {
+        s.extend_from_slice(&[0, 0, 0, 1, 0x09, 0x10]);
+        let kind = if i % 59 == 0 { 0x65 } else { 0x41 };
+        s.extend_from_slice(&[0, 0, 1, kind]);
+        s.extend((0..700).map(|b| (b % 251) as u8 | 1));
+    }
+    s
+}
+
+#[test]
+fn video_icon1_muxes_an_annex_b_stream() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("icon.h264");
+    std::fs::write(&input, annex_b_stream(120)).unwrap();
+
+    cli()
+        .args(["video", "icon1", input.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+
+    let pmf = std::fs::read(dir.path().join("ICON1.PMF")).unwrap();
+    assert_eq!(&pmf[..8], b"PSMF0014");
+    assert_eq!(pmf.len() % 2048, 0);
+
+    // A PMF goes into an EBOOT unchanged.
+    let module = fixture(&dir, "game.prx", 4096);
+    let eboot = dir.path().join("EBOOT.PBP");
+    cli()
+        .args([
+            "build-mg",
+            module.to_str().unwrap(),
+            "-o",
+            eboot.to_str().unwrap(),
+        ])
+        .args(["--icon1", dir.path().join("ICON1.PMF").to_str().unwrap()])
+        .assert()
+        .success();
+    cli()
+        .args(["inspect", eboot.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains(format!("{} bytes", pmf.len())));
+}
+
+#[test]
+fn video_icon1_rejects_a_stream_without_an_idr_picture() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("broken.h264");
+    let mut stream = vec![0, 0, 0, 1, 0x09, 0x10, 0, 0, 1, 0x41];
+    stream.extend_from_slice(&[1; 64]);
+    std::fs::write(&input, stream).unwrap();
+
+    cli()
+        .args(["video", "icon1", input.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains("IDR"));
+    assert!(!dir.path().join("ICON1.PMF").exists());
+}

@@ -33,6 +33,7 @@ pub mod pbp;
 pub mod prx;
 pub mod psp;
 pub mod sfo;
+pub mod video;
 
 pub use error::{Error, Result};
 pub use sfo::{Category, Sfo};

@@ -60,7 +60,8 @@ pub enum Command {
         /// XMB icon.
         #[arg(long, value_name = "FILE")]
         icon0: Option<PathBuf>,
-        /// Animated XMB icon.
+        /// Animated XMB icon: an ICON1.PMF, an H.264 Annex B stream, or a
+        /// video to convert (needs ffmpeg with libx264).
         #[arg(long, value_name = "FILE")]
         icon1: Option<PathBuf>,
         /// Background image, upper layer.
@@ -117,6 +118,12 @@ pub enum Command {
     Audio {
         #[command(subcommand)]
         command: AudioCommand,
+    },
+
+    /// Convert XMB video.
+    Video {
+        #[command(subcommand)]
+        command: VideoCommand,
     },
 
     /// Report what a file is and what it contains.
@@ -184,6 +191,22 @@ pub enum AudioCommand {
         /// Also fail on differences from the profile pspbuild writes.
         #[arg(long)]
         strict: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VideoCommand {
+    /// Convert a video, or an H.264 Annex B stream, to an ICON1.PMF.
+    ///
+    /// A video is encoded with ffmpeg and libx264, which must be installed;
+    /// an Annex B stream is muxed without them.
+    Icon1 {
+        /// Input video or H.264 Annex B stream.
+        input: PathBuf,
+
+        /// Output file. Defaults to `ICON1.PMF` beside the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -263,6 +286,10 @@ mod tests {
         );
         assert!(
             Cli::try_parse_from(["pspbuild", "audio", "inspect", "SND0.AT3", "--strict"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["pspbuild", "video", "icon1", "icon.mp4", "-o", "ICON1.PMF"])
+                .is_ok()
         );
         // Trimming only means something alongside a source.
         assert!(

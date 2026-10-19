@@ -1,6 +1,6 @@
 # pspbuild
 
-PSP EBOOT toolkit in Rust: encrypt PRX modules, build `EBOOT.PBP` containers, inspect or verify PSP executables, and convert music to XMB background audio.
+PSP EBOOT toolkit in Rust: encrypt PRX modules, build `EBOOT.PBP` containers, inspect or verify PSP executables, convert music to XMB background audio, and video to the animated XMB icon.
 
 - Performs KIRK cryptography locally; no external tools or runtime dependencies.
 - Generates `~PSP` headers from the payload instead of copying fixed-size templates.
@@ -20,6 +20,7 @@ PSP EBOOT toolkit in Rust: encrypt PRX modules, build `EBOOT.PBP` containers, in
 | `decrypt` | Recover the original module from an encrypted PRX or MG EBOOT |
 | `audio snd0` | Convert WAV, FLAC, Ogg Vorbis or MP3 to an `SND0.AT3` |
 | `audio inspect` | Explain an AT3 and check it against what the XMB plays |
+| `video icon1` | Convert a video or H.264 stream to an `ICON1.PMF` |
 
 ## Installation
 
@@ -50,11 +51,15 @@ pspbuild decrypt EBOOT.PBP -o game.prx
 pspbuild build-mg game.prx --snd0 theme.mp3 --snd0-start 30 --snd0-duration 40
 pspbuild audio snd0 theme.flac -o SND0.AT3
 pspbuild audio inspect SND0.AT3
+
+# Animated XMB icon (encoding a video needs ffmpeg with libx264)
+pspbuild build-mg game.prx --icon1 icon.mp4
+pspbuild video icon1 icon.mp4 -o ICON1.PMF
 ```
 
 Run `pspbuild <command> --help` for all options.
 
-`encrypt`, `build-mg`, `decrypt` and `audio snd0` are silent on success; pass `-v` for details on stderr. All commands exit non-zero on failure.
+`encrypt`, `build-mg`, `decrypt`, `audio snd0` and `video icon1` are silent on success; pass `-v` for details on stderr. All commands exit non-zero on failure.
 
 ### Options
 
@@ -64,7 +69,7 @@ Run `pspbuild <command> --help` for all options.
 | `build-mg` | `-t, --title` | XMB title (default: module name) |
 | `build-mg` | `--system-version` | `PSP_SYSTEM_VER` value |
 | `build-mg` | `--base <FILE>` | Start from an existing EBOOT, keeping its other sections |
-| `build-mg` | `--icon0`, `--icon1`, `--pic0`, `--pic1`, `--snd0` | Media sections. `--snd0` also takes WAV, FLAC, Ogg Vorbis or MP3 and converts it; a playable `SND0.AT3` is kept as-is |
+| `build-mg` | `--icon0`, `--icon1`, `--pic0`, `--pic1`, `--snd0` | Media sections. `--snd0` also takes WAV, FLAC, Ogg Vorbis or MP3 and converts it; a playable `SND0.AT3` is kept as-is. `--icon1` also takes a video or H.264 Annex B stream and converts it; a PMF is kept as-is |
 | `build-mg` | `--snd0-start`, `--snd0-duration` | Seconds; choose the section of `--snd0` to keep (at most 55 s) |
 | `build-eg` | `--content-id <ID>` | Required. Also derives the fixed version key |
 | `build-eg` | `--no-compress` | Store every block uncompressed |
@@ -73,6 +78,7 @@ Run `pspbuild <command> --help` for all options.
 | `extract` | `--decrypt` | Also write `DATA.PSP.dec` (MG only) |
 | `audio snd0` | `-o`, `--start`, `--duration` | Output (default `SND0.AT3` beside the input) and section |
 | `audio inspect` | `--strict` | Also fail on anything `pspbuild` would not write, e.g. LP2 or a missing loop point |
+| `video icon1` | `-o` | Output (default `ICON1.PMF` beside the input) |
 
 ### Example output
 
@@ -178,6 +184,7 @@ std::fs::write("SND0.AT3", &snd0.data)?;
 | `psp`, `kirk`, `crypto` | `~PSP` header, KIRK commands, AES/CMAC/SHA-1/ECDSA |
 | `npdrm` | NPUMDIMG, BB-MAC, BB-Cipher, LZRC, PGD, `DATA.PSP` |
 | `audio` | `make_snd0`, `inspect_at3`; `atrac3` encoder/decoder, `riff`, `input`, `pcm` |
+| `video` | `make_icon1`, `encode_h264`; `pmf` muxer |
 
 ## Security paths
 
@@ -199,6 +206,8 @@ std::fs::write("SND0.AT3", &snd0.data)?;
 - SND0 output plays and loops cleanly on one PSP Slim (6.61, ARK); other models are untested ([AUDIO.md §9](docs/AUDIO.md) has a checklist).
 - SND0 input: WAV, FLAC, Ogg Vorbis, MP3, ATRAC3. No AAC/M4A or Opus: no permissively licensed pure-Rust decoder. Longer input is cut to its first 54.94 s.
 - SND0 encoder has no gain control; sharp transients may pre-echo.
+- ICON1 encoding runs `ffmpeg` with `libx264`, the one external tool pspbuild uses: there is no pure-Rust encoder for the CABAC Main-profile H.264 the XMB plays. Muxing an existing Annex B stream needs nothing.
+- ICON1 output animates on one PSP Slim (6.61, ARK).
 
 See [COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
@@ -214,6 +223,7 @@ See [COMPATIBILITY.md](docs/COMPATIBILITY.md).
 | [NPUMDIMG.md](docs/NPUMDIMG.md) | EG archive format |
 | [KEYS.md](docs/KEYS.md) | Categories, tags and keys |
 | [AUDIO.md](docs/AUDIO.md) | `SND0.AT3`: XMB rules, ATRAC3 encoder, measurements |
+| [VIDEO.md](docs/VIDEO.md) | `ICON1.PMF`: PSMF layout, H.264 settings |
 | [COMPATIBILITY.md](docs/COMPATIBILITY.md) | Test results and known gaps |
 
 ## Development

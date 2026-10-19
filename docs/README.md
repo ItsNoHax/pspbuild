@@ -12,6 +12,7 @@ Format specifications for the files `pspbuild` reads and writes. Claims verified
 | [NPUMDIMG.md](NPUMDIMG.md) | EG archive: header, block table, BB-MAC, BB-Cipher, ECDSA |
 | [KEYS.md](KEYS.md) | Categories, tags and keys |
 | [AUDIO.md](AUDIO.md) | `SND0.AT3`: XMB rules and why, ATRAC3 encoder, decoder, validator |
+| [VIDEO.md](VIDEO.md) | `ICON1.PMF`: PSMF layout and H.264 settings |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Hardware, emulator and reference-tool results |
 
 Suggested order: PBP → FORMAT → MG, then EG → NPUMDIMG. KEYS is reference material.

@@ -8,11 +8,12 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{AudioCommand, Cli, Command, derive_output_path};
+use cli::{AudioCommand, Cli, Command, VideoCommand, derive_output_path};
 use pspbuild::audio::{At3Report, Snd0, Snd0Options, Snd0Source, make_snd0};
 use pspbuild::inspect::{FileFormat, Inspection, IsoReport, inspect, inspect_iso, inspect_pbp};
 use pspbuild::mg::{MgEbootRequest, build_mg_eboot};
 use pspbuild::pbp::{Pbp, PbpSection};
+use pspbuild::video::{Icon1, Icon1Source, make_icon1};
 use pspbuild::{Container, EncryptOptions, Error, decrypt_prx, encrypt_prx, verify_prx};
 
 fn main() -> ExitCode {
@@ -104,6 +105,14 @@ fn run(cli: &Cli) -> Result<(), Error> {
                     Ok::<_, Error>(converted.data)
                 })
                 .transpose()?;
+            let icon1 = icon1
+                .as_deref()
+                .map(|path| {
+                    let converted = make_icon1(path)?;
+                    report_icon1(cli.verbose, path, &converted);
+                    Ok::<_, Error>(converted.data)
+                })
+                .transpose()?;
             let base_bytes = base.as_deref().map(read).transpose()?;
             let base_pbp = base_bytes.as_deref().map(Pbp::parse).transpose()?;
 
@@ -114,7 +123,7 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 compress: !no_compress,
                 base: base_pbp.as_ref(),
                 icon0: icon0.as_deref().map(read).transpose()?,
-                icon1: icon1.as_deref().map(read).transpose()?,
+                icon1,
                 pic0: pic0.as_deref().map(read).transpose()?,
                 pic1: pic1.as_deref().map(read).transpose()?,
                 snd0,
@@ -216,6 +225,24 @@ fn run(cli: &Cli) -> Result<(), Error> {
             );
             Ok(())
         }
+
+        Command::Video { command } => match command {
+            VideoCommand::Icon1 { input, output } => {
+                let icon1 = make_icon1(input)?;
+                let out_path = output
+                    .clone()
+                    .unwrap_or_else(|| sibling(input, "ICON1.PMF"));
+                report_icon1(cli.verbose, input, &icon1);
+                if cli.verbose {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "Output:           {}",
+                        out_path.display()
+                    );
+                }
+                write(&out_path, &icon1.data)
+            }
+        },
 
         Command::Audio { command } => match command {
             AudioCommand::Snd0 {
@@ -474,6 +501,32 @@ fn report_snd0(verbose: bool, path: &Path, snd0: &Snd0) {
             );
         }
     }
+}
+
+fn report_icon1(verbose: bool, path: &Path, icon1: &Icon1) {
+    if !verbose {
+        return;
+    }
+    let mut err = std::io::stderr().lock();
+    let how = match icon1.source {
+        Icon1Source::PassedThrough => {
+            let _ = writeln!(
+                err,
+                "ICON1:            {} is already a PMF, used as-is",
+                path.display()
+            );
+            return;
+        }
+        Icon1Source::Muxed => "H.264 stream muxed",
+        Icon1Source::Encoded => "encoded with ffmpeg",
+    };
+    let _ = writeln!(
+        err,
+        "ICON1:            {how}, {} frames, {} GOPs, {} bytes",
+        icon1.frames.unwrap_or(0),
+        icon1.gops.unwrap_or(0),
+        icon1.data.len()
+    );
 }
 
 /// Print an AT3 report, each line prefixed with `indent`.
