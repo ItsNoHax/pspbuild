@@ -165,7 +165,10 @@ At most **55 s** and **500 KB** (500000 bytes). At LP4 the time limit binds
 first: 2368 frames is 54.98 s and 454,800 bytes, and one more frame is over
 55 s. Two of those frames are the lead-in and the spare, so the longest loop
 is 2366 frames, 54.94 s. A longer input is cut to its first 54.94 s, with a
-warning. Use `--start`/`--duration` to choose a different section.
+warning. Use `--start`/`--duration` to choose a different section, or
+`--exact` (`--snd0-exact` in `build-mg`) to fail instead of changing the music
+in any way: no cut, no re-encode of an ATRAC3 input, no pass-through with a
+warning. That suits a source written as a seamless loop.
 
 ### 3.4 Looping
 

@@ -64,6 +64,9 @@ pub enum Error {
     #[error("unsupported audio: {0}")]
     UnsupportedAudio(String),
 
+    #[error("invalid image: {0}")]
+    InvalidImage(String),
+
     #[error("invalid video: {0}")]
     InvalidVideo(String),
 

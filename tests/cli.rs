@@ -6,6 +6,7 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use common::make_prx;
+use predicates::prelude::*;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -532,4 +533,51 @@ fn video_icon1_rejects_a_stream_without_an_idr_picture() {
         .failure()
         .stderr(contains("IDR"));
     assert!(!dir.path().join("ICON1.PMF").exists());
+}
+
+/// The header chunks of a PNG; enough for pspbuild's section checks.
+fn png_header(width: u32, height: u32, color_type: u8) -> Vec<u8> {
+    let mut d = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'];
+    d.extend_from_slice(&13u32.to_be_bytes());
+    d.extend_from_slice(b"IHDR");
+    d.extend_from_slice(&width.to_be_bytes());
+    d.extend_from_slice(&height.to_be_bytes());
+    d.extend_from_slice(&[8, color_type, 0, 0, 0, 0, 0, 0, 0]);
+    d.extend_from_slice(&[0, 0, 0, 0]);
+    d.extend_from_slice(b"IEND");
+    d.extend_from_slice(&[0; 4]);
+    d
+}
+
+#[test]
+fn build_mg_and_inspect_warn_about_png_sections() {
+    let dir = TempDir::new().unwrap();
+    let module = fixture(&dir, "game.prx", 4096);
+    let icon0 = dir.path().join("ICON0.PNG");
+    let pic1 = dir.path().join("PIC1.PNG");
+    std::fs::write(&icon0, png_header(144, 80, 2)).unwrap();
+    std::fs::write(&pic1, png_header(480, 270, 2)).unwrap();
+    let eboot = dir.path().join("EBOOT.PBP");
+
+    cli()
+        .args([
+            "build-mg",
+            module.to_str().unwrap(),
+            "-o",
+            eboot.to_str().unwrap(),
+        ])
+        .args([
+            "--icon0",
+            icon0.to_str().unwrap(),
+            "--pic1",
+            pic1.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(contains("PIC1.PNG: 480 x 270").and(contains("ICON0").not()));
+    cli()
+        .args(["inspect", eboot.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("WARNING: PIC1.PNG: 480 x 270"));
 }

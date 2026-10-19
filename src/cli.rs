@@ -80,6 +80,9 @@ pub enum Command {
         /// Seconds of --snd0 to keep; at most 55.
         #[arg(long, value_name = "SECONDS", requires = "snd0")]
         snd0_duration: Option<f64>,
+        /// Fail rather than cut or otherwise change --snd0 to fit.
+        #[arg(long, requires = "snd0")]
+        snd0_exact: bool,
     },
 
     /// Build an EG EBOOT.PBP from a PSP ISO.
@@ -181,6 +184,11 @@ pub enum AudioCommand {
         /// Seconds to keep; at most 55. Longer input is cut to fit.
         #[arg(long, value_name = "SECONDS")]
         duration: Option<f64>,
+
+        /// Fail rather than cut or otherwise change the input to fit, e.g. a
+        /// seamless loop whose seam a cut would break.
+        #[arg(long)]
+        exact: bool,
     },
 
     /// Explain an AT3 file and check it against what the XMB plays.

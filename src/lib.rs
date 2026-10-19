@@ -24,6 +24,7 @@ pub mod crypto;
 pub mod eg;
 pub mod error;
 pub mod format;
+pub mod image;
 pub mod inspect;
 pub mod iso;
 pub mod kirk;
@@ -92,6 +93,9 @@ pub struct Encrypted {
 }
 
 /// Encrypt a PSP module.
+///
+/// The result is decrypted again before it is returned, and an error is
+/// returned unless it gives back the input byte for byte.
 pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> {
     // An EBOOT.PBP carries the module in its DATA.PSP section. Encrypt that
     // section and hand back a rebuilt container, so homebrew can be encrypted
@@ -135,6 +139,15 @@ pub fn encrypt_prx(input: &[u8], options: &EncryptOptions) -> Result<Encrypted> 
         uncompressed_size: module.elf_size,
         tag: &TAG_DEMO_280,
     })?;
+
+    // Prove the result before handing it back. The header hash and CMACs that
+    // `verify_prx` checks would pass a container holding the wrong payload;
+    // only decrypting it back to exactly this module shows it will run.
+    if decrypt_prx(&built.data)? != input {
+        return Err(Error::IntegrityCheck(
+            "the encrypted module does not decrypt to the module that went in".into(),
+        ));
+    }
 
     Ok(Encrypted {
         data: built.data,
@@ -244,6 +257,8 @@ pub struct Verification {
     pub module: Option<ModuleInfo>,
     /// The validator's view of the container's `SND0.AT3`, when it has one.
     pub snd0: Option<audio::At3Report>,
+    /// Problems with the container's PNG sections.
+    pub image_warnings: Vec<String>,
 }
 
 /// Verify an encrypted PRX as thoroughly as the format allows.
@@ -254,9 +269,13 @@ pub struct Verification {
 pub fn verify_prx(data: &[u8]) -> Result<Verification> {
     let mut checks = Vec::new();
     let mut snd0 = None;
+    let mut image_warnings = Vec::new();
     if Pbp::is_pbp(data) {
         let container = Pbp::parse(data)?;
         checks.push("PBP container structure".into());
+        for section in pbp::PbpSection::ALL {
+            image_warnings.extend(image::check_slot(section, container.section(section)));
+        }
         let music = container.section(pbp::PbpSection::Snd0At3);
         if !music.is_empty() {
             let report = audio::inspect_at3(music);
@@ -346,6 +365,7 @@ pub fn verify_prx(data: &[u8]) -> Result<Verification> {
         recovered_size: recovered.len() as u32,
         module,
         snd0,
+        image_warnings,
     })
 }
 

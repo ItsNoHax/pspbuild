@@ -382,6 +382,7 @@ fn retail_and_known_good_files_survive_a_round_trip_through_our_codec() {
             &Snd0Options {
                 start: None,
                 duration: Some(6.0),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -884,6 +885,7 @@ fn start_and_duration_select_a_section() {
     let options = Snd0Options {
         start: Some(2.0),
         duration: Some(1.0),
+        ..Default::default()
     };
     let snd0 = make_snd0(&wav(44_100, &[t]), &options).unwrap();
     assert_eq!(snd0.report.frames, frames_for(44_100));
@@ -892,6 +894,7 @@ fn start_and_duration_select_a_section() {
     let past = Snd0Options {
         start: Some(10.0),
         duration: None,
+        ..Default::default()
     };
     assert!(make_snd0(&wav(44_100, &[tone(44_100, 500.0, 1.0, 1.0)]), &past).is_err());
 }
@@ -983,4 +986,19 @@ fn reencoding_our_own_output_keeps_just_the_loop() {
     let (file, _) = encode_snd0(chord(1.0), &Snd0Options::default()).unwrap();
     let (_, pcm) = pspbuild::audio::input::decode(&file).unwrap();
     assert_eq!(pcm.len(), samples(1.0));
+}
+
+#[test]
+fn exact_refuses_any_change_to_the_music() {
+    let exact = Snd0Options {
+        exact: true,
+        ..Default::default()
+    };
+    // A short tone needs no change.
+    let short = wav(44_100, &[tone(44_100, 500.0, 1.0, 8000.0)]);
+    assert!(make_snd0(&short, &exact).unwrap().notices.is_empty());
+
+    // Passing through a file that will not loop is a notice, so it fails.
+    let err = make_snd0(&known_good(), &exact).unwrap_err().to_string();
+    assert!(err.contains("plays it once"), "{err}");
 }

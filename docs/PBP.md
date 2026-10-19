@@ -42,8 +42,8 @@ The container imposes none; sections are packed back to back. EG containers alig
 | --- | --- | --- | --- |
 | 0 | `PARAM.SFO` | Parameter table (§3) | yes |
 | 1 | `ICON0.PNG` | XMB icon, 144×80 | no |
-| 2 | `ICON1.PMF` | Animated icon (PSMF) | no |
-| 3 | `PIC0.PNG` | Background overlay | no |
+| 2 | `ICON1.PMF` | Animated icon (PSMF, [VIDEO.md](VIDEO.md)) | no |
+| 3 | `PIC0.PNG` | Background overlay, 310×180 | no |
 | 4 | `PIC1.PNG` | Background, 480×272 | no |
 | 5 | `SND0.AT3` | Background audio (RIFF/AT3) | no |
 | 6 | `DATA.PSP` | Executable | yes |
@@ -58,6 +58,20 @@ The container imposes none; sections are packed back to back. EG containers alig
 | `ME` | PSOne classic | NPDRM licence stub | `PSISOIMG0000` |
 
 `UG` is the category inside a retail UMD's own `PARAM.SFO`; it never appears in a PBP.
+
+### 2.1 PNG sections
+
+`build-mg`, `inspect` and `verify` read the header chunks of `ICON0`, `PIC0`
+and `PIC1` and warn, never fail, when:
+
+- the section is not a PNG;
+- its size differs from the one in the table above;
+- `ICON0` or `PIC1` has transparency: an alpha channel (colour type 4 or 6)
+  or a `tRNS` chunk. `PIC0` is an overlay, so it is not checked.
+
+The alpha warning rests on reports that some firmware and packers reject an
+alpha channel there. It is not confirmed: an RGBA `ICON0` displays on a PSP
+Slim (6.61, ARK).
 
 ## 3. `PARAM.SFO`
 

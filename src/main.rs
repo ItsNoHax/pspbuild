@@ -91,6 +91,7 @@ fn run(cli: &Cli) -> Result<(), Error> {
             snd0,
             snd0_start,
             snd0_duration,
+            snd0_exact,
         } => {
             let module = read(input)?;
             let snd0 = snd0
@@ -99,6 +100,7 @@ fn run(cli: &Cli) -> Result<(), Error> {
                     let options = Snd0Options {
                         start: *snd0_start,
                         duration: *snd0_duration,
+                        exact: *snd0_exact,
                     };
                     let converted = make_snd0(&read(path)?, &options)?;
                     report_snd0(cli.verbose, path, &converted);
@@ -113,6 +115,19 @@ fn run(cli: &Cli) -> Result<(), Error> {
                     Ok::<_, Error>(converted.data)
                 })
                 .transpose()?;
+            let icon0 = icon0.as_deref().map(read).transpose()?;
+            let pic0 = pic0.as_deref().map(read).transpose()?;
+            let pic1 = pic1.as_deref().map(read).transpose()?;
+            for (section, data) in [
+                (PbpSection::Icon0Png, &icon0),
+                (PbpSection::Pic0Png, &pic0),
+                (PbpSection::Pic1Png, &pic1),
+            ] {
+                for warning in pspbuild::image::check_slot(section, data.as_deref().unwrap_or(&[]))
+                {
+                    let _ = writeln!(std::io::stderr(), "warning: {warning}");
+                }
+            }
             let base_bytes = base.as_deref().map(read).transpose()?;
             let base_pbp = base_bytes.as_deref().map(Pbp::parse).transpose()?;
 
@@ -122,10 +137,10 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 system_version: system_version.as_deref(),
                 compress: !no_compress,
                 base: base_pbp.as_ref(),
-                icon0: icon0.as_deref().map(read).transpose()?,
+                icon0,
                 icon1,
-                pic0: pic0.as_deref().map(read).transpose()?,
-                pic1: pic1.as_deref().map(read).transpose()?,
+                pic0,
+                pic1,
                 snd0,
             })?;
 
@@ -250,10 +265,12 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 output,
                 start,
                 duration,
+                exact,
             } => {
                 let options = Snd0Options {
                     start: *start,
                     duration: *duration,
+                    exact: *exact,
                 };
                 let snd0 = make_snd0(&read(input)?, &options)?;
                 let out_path = output.clone().unwrap_or_else(|| sibling(input, "SND0.AT3"));
@@ -310,6 +327,9 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 for warning in report.warnings() {
                     let _ = writeln!(out, "WARNING: SND0.AT3: {}", warning.message);
                 }
+            }
+            for warning in &result.image_warnings {
+                let _ = writeln!(out, "WARNING: {warning}");
             }
             let _ = writeln!(out, "Recovered size:      {} bytes", result.recovered_size);
             if let Some(module) = &result.module {
@@ -411,6 +431,12 @@ fn print_inspection(report: &Inspection) {
             }
         }
         let _ = writeln!(out);
+        for warning in &container.image_warnings {
+            let _ = writeln!(out, "WARNING: {warning}");
+        }
+        if !container.image_warnings.is_empty() {
+            let _ = writeln!(out);
+        }
         if let Some(snd0) = &container.snd0 {
             let _ = writeln!(out, "SND0.AT3:");
             print_at3(&mut out, snd0, "  ");

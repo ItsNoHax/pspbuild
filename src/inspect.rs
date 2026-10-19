@@ -167,6 +167,8 @@ pub struct ContainerReport {
     pub sections: Vec<SectionReport>,
     /// The validator's view of `SND0.AT3`, when there is one.
     pub snd0: Option<crate::audio::At3Report>,
+    /// Problems with the PNG sections (`ICON0`, `PIC0`, `PIC1`).
+    pub image_warnings: Vec<String>,
 }
 
 /// One asset the EG pipeline looks for in an image.
@@ -260,6 +262,7 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
     let mut param_sfo_raw = Vec::new();
     let mut data_psp_prefix = Vec::new();
     let mut snd0 = None;
+    let mut image_warnings = Vec::new();
 
     for section in PbpSection::ALL {
         let (offset, size) = layout.section(section);
@@ -273,6 +276,9 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
         match section {
             PbpSection::ParamSfo => param_sfo_raw = prefix,
             PbpSection::DataPsp => data_psp_prefix = prefix,
+            PbpSection::Icon0Png | PbpSection::Pic0Png | PbpSection::Pic1Png => {
+                image_warnings.extend(crate::image::check_slot(section, &prefix));
+            }
             PbpSection::Snd0At3 if size > 0 => {
                 snd0 = Some(if size > STREAM_SECTION_LIMIT {
                     crate::audio::validate::oversized(size as usize)
@@ -292,6 +298,7 @@ pub fn inspect_pbp<R: std::io::Read + std::io::Seek>(
         param_sfo_error: None,
         sections,
         snd0,
+        image_warnings,
     };
 
     let mut param_sfo = None;
@@ -442,6 +449,10 @@ pub fn inspect(data: &[u8]) -> Result<Inspection> {
             let snd0 = pbp.section(PbpSection::Snd0At3);
             (!snd0.is_empty()).then(|| crate::audio::inspect_at3(snd0))
         },
+        image_warnings: PbpSection::ALL
+            .into_iter()
+            .flat_map(|s| crate::image::check_slot(s, pbp.section(s)))
+            .collect(),
     };
 
     let mut param_sfo = None;

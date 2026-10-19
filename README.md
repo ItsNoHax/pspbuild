@@ -11,11 +11,11 @@ PSP EBOOT toolkit in Rust: encrypt PRX modules, build `EBOOT.PBP` containers, in
 
 | Feature | Description |
 | --- | --- |
-| `encrypt` | Encrypt a PRX, or the `DATA.PSP` of an existing `EBOOT.PBP` |
+| `encrypt` | Encrypt a PRX, or the `DATA.PSP` of an existing `EBOOT.PBP`; the result is decrypted back and must match the input |
 | `build-mg` | Build a homebrew (`CATEGORY=MG`) EBOOT from a module |
 | `build-eg` | Build a signed Store-format (`CATEGORY=EG`, NPDRM) EBOOT from a UMD image |
-| `inspect` | Describe a PBP, UMD image, or PRX, including whether the XMB can play its `SND0.AT3` |
-| `verify` | Check an encrypted PRX or MG EBOOT: header SHA-1, CMACs, decryption, module, `SND0.AT3` |
+| `inspect` | Describe a PBP, UMD image, or PRX, including whether the XMB can play its `SND0.AT3` and whether its PNGs fit their slots |
+| `verify` | Check an encrypted PRX or MG EBOOT: header SHA-1, CMACs, decryption, module, `SND0.AT3`, PNG sizes |
 | `extract` | Write each PBP section to a directory |
 | `decrypt` | Recover the original module from an encrypted PRX or MG EBOOT |
 | `audio snd0` | Convert WAV, FLAC, Ogg Vorbis or MP3 to an `SND0.AT3` |
@@ -71,12 +71,14 @@ Run `pspbuild <command> --help` for all options.
 | `build-mg` | `--base <FILE>` | Start from an existing EBOOT, keeping its other sections |
 | `build-mg` | `--icon0`, `--icon1`, `--pic0`, `--pic1`, `--snd0` | Media sections. `--snd0` also takes WAV, FLAC, Ogg Vorbis or MP3 and converts it; a playable `SND0.AT3` is kept as-is. `--icon1` also takes a video or H.264 Annex B stream and converts it; a PMF is kept as-is |
 | `build-mg` | `--snd0-start`, `--snd0-duration` | Seconds; choose the section of `--snd0` to keep (at most 55 s) |
+| `build-mg` | `--snd0-exact` | Fail rather than cut or otherwise change `--snd0` to fit |
 | `build-eg` | `--content-id <ID>` | Required. Also derives the fixed version key |
 | `build-eg` | `--no-compress` | Store every block uncompressed |
 | `build-eg` | `--startdat <PNG>` | Boot screen image |
 | `build-eg` | `--opnssmp <FILE>` | `OPNSSMP.BIN` module |
 | `extract` | `--decrypt` | Also write `DATA.PSP.dec` (MG only) |
 | `audio snd0` | `-o`, `--start`, `--duration` | Output (default `SND0.AT3` beside the input) and section |
+| `audio snd0` | `--exact` | Fail rather than cut, re-encode or pass through with a warning: for a seamless loop |
 | `audio inspect` | `--strict` | Also fail on anything `pspbuild` would not write, e.g. LP2 or a missing loop point |
 | `video icon1` | `-o` | Output (default `ICON1.PMF` beside the input) |
 
@@ -180,6 +182,7 @@ std::fs::write("SND0.AT3", &snd0.data)?;
 | `mg` | `build_mg_eboot` |
 | `eg` | `build_eg_eboot` (streaming) |
 | `inspect` | File detection and reports |
+| `image` | `png_info`, `check_slot`: PNG section checks |
 | `pbp`, `sfo`, `iso` | Container, parameter table, ISO9660 reader |
 | `psp`, `kirk`, `crypto` | `~PSP` header, KIRK commands, AES/CMAC/SHA-1/ECDSA |
 | `npdrm` | NPUMDIMG, BB-MAC, BB-Cipher, LZRC, PGD, `DATA.PSP` |

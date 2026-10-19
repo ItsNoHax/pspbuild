@@ -39,6 +39,10 @@ pub struct Snd0Options {
     pub start: Option<f64>,
     /// Seconds to keep. Without it, as much as the XMB allows.
     pub duration: Option<f64>,
+    /// Fail instead of returning any notice: a cut to fit, a re-encode, or a
+    /// warning about a file passed through. For a source written as a
+    /// seamless loop, whose seam a cut would break.
+    pub exact: bool,
 }
 
 impl Snd0Options {
@@ -96,6 +100,17 @@ pub fn frames_for(samples: usize) -> usize {
 /// would reject — is decoded and encoded afresh. The result is validated
 /// strictly; a file that fails is never returned.
 pub fn make_snd0(input: &[u8], options: &Snd0Options) -> Result<Snd0> {
+    let snd0 = convert(input, options)?;
+    if options.exact && !snd0.notices.is_empty() {
+        return Err(Error::InvalidAudio(format!(
+            "refusing to change the music to fit: {}",
+            snd0.notices.join("; ")
+        )));
+    }
+    Ok(snd0)
+}
+
+fn convert(input: &[u8], options: &Snd0Options) -> Result<Snd0> {
     let format = input::detect(input)?;
     let mut reencoded_because = None;
     if format == InputFormat::Atrac3 {

@@ -21,6 +21,11 @@ PRX
 | `PARAM.SFO` | Parameter table | [PBP.md §3](PBP.md) |
 | PBP | `EBOOT.PBP` | [PBP.md §1](PBP.md) |
 
+Before anything is written, the encrypted module is decrypted again and must
+give back the input byte for byte; `encrypt` and `build-mg` fail otherwise.
+The hash and CMAC checks of `verify` alone would accept a container that
+decrypts to some other payload.
+
 ## 2. `DATA.PSP` size
 
 ```text
